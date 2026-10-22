@@ -1,0 +1,103 @@
+"""
+EvenBill Expense, Payer, Split, and Receipt ORM Models
+Uses Numeric(18, 4) for zero floating-point loss.
+"""
+
+import uuid
+from datetime import datetime, timezone, date
+from decimal import Decimal
+from sqlalchemy import String, Boolean, DateTime, Date, Numeric, Text, Integer, ForeignKey, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.db.session import Base
+
+
+class Expense(Base):
+    __tablename__ = "expenses"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
+    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    description: Mapped[str] = mapped_column(String(255), nullable=False)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    base_currency_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    exchange_rate: Mapped[Decimal] = mapped_column(Numeric(18, 8), default=Decimal("1.0"), nullable=False)
+    split_type: Mapped[str] = mapped_column(String(32), default="EQUAL", nullable=False)  # EQUAL, EXACT, PERCENTAGE, SHARES, ITEMIZED
+    category: Mapped[str] = mapped_column(String(64), default="GENERAL", nullable=False)
+    expense_date: Mapped[date] = mapped_column(Date, default=lambda: datetime.now(timezone.utc).date(), nullable=False)
+    notes: Mapped[str] = mapped_column(Text, nullable=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    # Relationships
+    group = relationship("Group", back_populates="expenses")
+    payers = relationship("ExpensePayer", back_populates="expense", cascade="all, delete-orphan")
+    splits = relationship("ExpenseSplit", back_populates="expense", cascade="all, delete-orphan")
+    receipts = relationship("Receipt", back_populates="expense", cascade="all, delete-orphan")
+
+
+class ExpensePayer(Base):
+    __tablename__ = "expense_payers"
+    __table_args__ = (
+        UniqueConstraint("expense_id", "user_id", name="uq_expense_payer"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    amount_paid: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+
+    # Relationships
+    expense = relationship("Expense", back_populates="payers")
+    user = relationship("User")
+
+
+class ExpenseSplit(Base):
+    __tablename__ = "expense_splits"
+    __table_args__ = (
+        UniqueConstraint("expense_id", "user_id", name="uq_expense_split"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    owed_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    share_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=True)
+
+    # Relationships
+    expense = relationship("Expense", back_populates="splits")
+    user = relationship("User")
+
+
+class Receipt(Base):
+    __tablename__ = "receipts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
+    s3_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    ocr_status: Mapped[str] = mapped_column(String(32), default="NONE", nullable=False)
+    raw_ocr_payload: Mapped[str] = mapped_column(Text, nullable=True)
+
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    # Relationships
+    expense = relationship("Expense", back_populates="receipts")
