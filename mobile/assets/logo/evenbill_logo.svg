@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" fill="none">
+  <!-- EvenBill Brand Logo: Abstract Equilibrium Balance -->
+  <defs>
+    <linearGradient id="eb_top_grad" x1="20" y1="28" x2="90" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#153C32" />
+      <stop offset="100%" stop-color="#286B56" />
+    </linearGradient>
+    <linearGradient id="eb_bottom_grad" x1="30" y1="74" x2="100" y2="92" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#286B56" />
+      <stop offset="100%" stop-color="#153C32" />
+    </linearGradient>
+  </defs>
+
+  <!-- Top Balance Pill (Creditor / Sharing) -->
+  <rect x="22" y="28" width="66" height="20" rx="10" fill="url(#eb_top_grad)" />
+
+  <!-- Bottom Balance Pill (Settlement / Equality) -->
+  <rect x="32" y="72" width="66" height="20" rx="10" fill="url(#eb_bottom_grad)" />
+
+  <!-- Central Balancing Fulcrum (The Even Equilibrium) -->
+  <circle cx="60" cy="60" r="14" fill="#9BE5C3" />
+  <circle cx="60" cy="60" r="6" fill="#153C32" />
+
+  <!-- Harmonic Offset Counterweights -->
+  <circle cx="98" cy="38" r="6" fill="#9BE5C3" />
+  <circle cx="22" cy="82" r="6" fill="#9BE5C3" />
+</svg>

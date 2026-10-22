@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" fill="none">
+  <!-- EvenBill Dark Theme Logo -->
+  <defs>
+    <linearGradient id="eb_dark_top" x1="20" y1="28" x2="90" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#9BE5C3" />
+      <stop offset="100%" stop-color="#4E9B80" />
+    </linearGradient>
+    <linearGradient id="eb_dark_bottom" x1="30" y1="74" x2="100" y2="92" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4E9B80" />
+      <stop offset="100%" stop-color="#9BE5C3" />
+    </linearGradient>
+  </defs>
+
+  <!-- Top Balance Pill -->
+  <rect x="22" y="28" width="66" height="20" rx="10" fill="url(#eb_dark_top)" />
+
+  <!-- Bottom Balance Pill -->
+  <rect x="32" y="72" width="66" height="20" rx="10" fill="url(#eb_dark_bottom)" />
+
+  <!-- Central Balancing Fulcrum -->
+  <circle cx="60" cy="60" r="14" fill="#F7F6EF" />
+  <circle cx="60" cy="60" r="6" fill="#0C1814" />
+
+  <!-- Harmonic Offset Counterweights -->
+  <circle cx="98" cy="38" r="6" fill="#F7F6EF" />
+  <circle cx="22" cy="82" r="6" fill="#F7F6EF" />
+</svg>

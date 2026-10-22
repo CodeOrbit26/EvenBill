@@ -1,22 +1,22 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:evenbill/main.dart';
+import 'package:evenbill/screens/splash/splash_screen.dart';
+import 'package:evenbill/screens/onboarding/onboarding_screen.dart';
 
 void main() {
-  testWidgets('EvenBillApp renders title and groups overview', (WidgetTester tester) async {
+  testWidgets('EvenBillApp starts with SplashScreen and transitions to Onboarding', (tester) async {
     await tester.pumpWidget(const EvenBillApp());
+
+    // Initially on Splash Screen
+    expect(find.byType(SplashScreen), findsOneWidget);
+
+    // Fast-forward past splash duration (2200ms)
+    await tester.pump(const Duration(milliseconds: 2300));
     await tester.pumpAndSettle();
 
-    // Verify app brand is rendered
-    expect(find.text('EvenBill'), findsOneWidget);
-
-    // Verify balance card summary
-    expect(find.text('Overall, you are owed'), findsOneWidget);
-
-    // Verify Add Expense floating action button is present
-    expect(find.text('Add Expense'), findsOneWidget);
-
-    // Verify groups list header
-    expect(find.text('Your Groups'), findsOneWidget);
+    // Now on Onboarding Screen
+    expect(find.byType(OnboardingScreen), findsOneWidget);
+    expect(find.text('Get Started'), findsOneWidget);
+    expect(find.text('Sign In'), findsOneWidget);
   });
 }
