@@ -862,7 +862,11 @@ def upgrade() -> None:
                 RAISE EXCEPTION 'financial_audit_logs is strictly immutable: updates and deletions are forbidden';
             END;
             $$;
+        """)
 
+        op.execute("DROP TRIGGER IF EXISTS trg_no_update_delete_audit_logs ON financial_audit_logs;")
+
+        op.execute("""
             CREATE TRIGGER trg_no_update_delete_audit_logs
             BEFORE UPDATE OR DELETE ON financial_audit_logs
             FOR EACH ROW EXECUTE FUNCTION public.prevent_audit_log_tampering();
@@ -890,8 +894,11 @@ def upgrade() -> None:
               RETURN new;
             END;
             $$;
+        """)
 
-            DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+        op.execute("DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;")
+
+        op.execute("""
             CREATE TRIGGER on_auth_user_created
               AFTER INSERT ON auth.users
               FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
@@ -907,5 +914,90 @@ def downgrade() -> None:
         'invitations', 'pending_participants', 'group_split_templates',
         'group_members', 'groups', 'friendships', 'profiles'
     ]
-    for tbl in tables:
-        op.drop_table(tbl)
+
+    bind = op.get_bind()
+    is_pg = bind.dialect.name == "postgresql"
+    if is_pg:
+        # 1. Drop external trigger on auth.users and internal audit trigger
+        op.execute("DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;")
+        op.execute("DROP TRIGGER IF EXISTS trg_no_update_delete_audit_logs ON financial_audit_logs;")
+
+        # 2. Drop foreign key constraint to auth.users
+        op.execute("ALTER TABLE IF EXISTS profiles DROP CONSTRAINT IF EXISTS fk_profiles_auth_users;")
+
+        # 3. Explicitly drop all migration-owned RLS policies to eliminate dependency deadlocks
+        policies = [
+            ('profiles', 'profiles_select'),
+            ('profiles', 'profiles_insert'),
+            ('profiles', 'profiles_update'),
+            ('profiles', 'profiles_delete'),
+            ('friendships', 'friendships_select'),
+            ('friendships', 'friendships_insert'),
+            ('friendships', 'friendships_update'),
+            ('friendships', 'friendships_delete'),
+            ('groups', 'groups_select'),
+            ('groups', 'groups_insert'),
+            ('groups', 'groups_update'),
+            ('groups', 'groups_delete'),
+            ('group_members', 'group_members_select'),
+            ('group_members', 'group_members_insert'),
+            ('group_members', 'group_members_update'),
+            ('group_members', 'group_members_delete'),
+            ('group_split_templates', 'group_split_templates_select'),
+            ('group_split_templates', 'group_split_templates_insert'),
+            ('group_split_templates', 'group_split_templates_update'),
+            ('group_split_templates', 'group_split_templates_delete'),
+            ('pending_participants', 'pending_participants_select'),
+            ('pending_participants', 'pending_participants_insert'),
+            ('pending_participants', 'pending_participants_update'),
+            ('pending_participants', 'pending_participants_delete'),
+            ('invitations', 'invitations_select'),
+            ('invitations', 'invitations_insert'),
+            ('invitations', 'invitations_update'),
+            ('invitations', 'invitations_delete'),
+            ('expenses', 'expenses_select'),
+            ('expenses', 'expenses_insert'),
+            ('expenses', 'expenses_update'),
+            ('expenses', 'expenses_delete'),
+            ('expense_payers', 'expense_payers_select'),
+            ('expense_payers', 'expense_payers_modify'),
+            ('expense_splits', 'expense_splits_select'),
+            ('expense_splits', 'expense_splits_modify'),
+            ('expense_participants', 'expense_participants_select'),
+            ('expense_participants', 'expense_participants_modify'),
+            ('settlements', 'settlements_select'),
+            ('settlements', 'settlements_insert'),
+            ('settlements', 'settlements_update'),
+            ('settlements', 'settlements_delete'),
+            ('exchange_rate_snapshots', 'exchange_rates_select'),
+            ('receipts', 'receipts_select'),
+            ('receipts', 'receipts_insert'),
+            ('receipts', 'receipts_update'),
+            ('receipts', 'receipts_delete'),
+            ('comments', 'comments_select'),
+            ('comments', 'comments_insert'),
+            ('comments', 'comments_update'),
+            ('comments', 'comments_delete'),
+            ('activity_events', 'activity_events_select'),
+            ('notification_preferences', 'notification_preferences_select'),
+            ('notification_preferences', 'notification_preferences_insert'),
+            ('notification_preferences', 'notification_preferences_update'),
+            ('notification_preferences', 'notification_preferences_delete'),
+            ('subscriptions', 'subscriptions_select'),
+            ('financial_audit_logs', 'financial_audit_logs_select'),
+        ]
+        for tbl, pol in policies:
+            op.execute(f'DROP POLICY IF EXISTS "{pol}" ON {tbl};')
+
+        # 4. Drop migration-owned functions explicitly without CASCADE
+        op.execute("DROP FUNCTION IF EXISTS public.handle_new_user();")
+        op.execute("DROP FUNCTION IF EXISTS public.prevent_audit_log_tampering();")
+        op.execute("DROP FUNCTION IF EXISTS public.is_group_admin(uuid, uuid);")
+        op.execute("DROP FUNCTION IF EXISTS public.is_group_member(uuid, uuid);")
+
+        # 5. Drop migration-owned tables in reverse dependency order without CASCADE
+        for tbl in tables:
+            op.execute(f"DROP TABLE IF EXISTS {tbl};")
+    else:
+        for tbl in tables:
+            op.drop_table(tbl)
