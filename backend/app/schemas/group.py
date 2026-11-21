@@ -22,6 +22,12 @@ class GroupUpdate(BaseModel):
     avatar_url: Optional[str] = None
 
 
+class GroupMemberAdd(BaseModel):
+    full_name: str = Field(..., min_length=1, max_length=120)
+    email: Optional[str] = Field(None, max_length=255)
+    phone_number: Optional[str] = Field(None, max_length=32)
+
+
 class GroupMemberResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -59,6 +65,15 @@ class SimplifiedDebtItem(BaseModel):
     currency: str
 
 
+class BilateralDebtItem(BaseModel):
+    debtor_id: str
+    debtor_name: str
+    creditor_id: str
+    creditor_name: str
+    amount: Decimal
+    currency: str
+
+
 class NetBalanceItem(BaseModel):
     user_id: str
     full_name: str
@@ -71,3 +86,22 @@ class GroupDetailResponse(BaseModel):
     members: List[GroupMemberResponse]
     net_balances: List[NetBalanceItem]
     simplified_debts: List[SimplifiedDebtItem]
+    bilateral_debts: List[BilateralDebtItem] = []
+
+
+class GroupInvitationCreate(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+
+
+class GroupInvitationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    group_id: str
+    email: str
+    invited_by: str
+    inviter_name: Optional[str] = None
+    status: str  # PENDING, ACCEPTED, EXPIRED, REVOKED
+    created_at: datetime
+    expires_at: datetime
+

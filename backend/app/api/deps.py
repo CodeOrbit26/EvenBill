@@ -3,6 +3,7 @@ EvenBill FastAPI Route Dependencies
 Handles token extraction, user authentication, and subscription role enforcement.
 """
 
+import jwt
 from typing import AsyncGenerator
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -39,10 +40,18 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token payload missing subject identifier"
             )
+    except HTTPException:
+        raise
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials or token expired",
+            detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"}
         )
 

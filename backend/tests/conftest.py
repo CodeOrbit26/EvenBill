@@ -47,8 +47,12 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db] = override_get_db
 
+    from app.core.rate_limit import limiter
+    limiter.reset()
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
+    limiter.reset()
     app.dependency_overrides.clear()

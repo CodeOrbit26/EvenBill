@@ -10,8 +10,9 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
+!mobile/lib/
 parts/
 sdist/
 var/
@@ -46,4 +47,13 @@ flutter_*.png
 
 # Environments & Secrets
 .env
+.env.*
+!.env.example
+!.env.production.example
 *.local
+
+# IDEs & OS
+.idea/
+.vscode/
+*.apk
+*.aab

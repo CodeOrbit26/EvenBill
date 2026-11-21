@@ -62,3 +62,39 @@ async def test_register_and_login_flow(client: AsyncClient):
     new_token_data = refresh_resp.json()["data"]
     assert "access_token" in new_token_data
     assert new_token_data["access_token"] != access_token
+
+
+@pytest.mark.asyncio
+async def test_oauth_google_and_apple_flow(client: AsyncClient):
+    # 1. Google OAuth login/register
+    google_payload = {
+        "provider": "google",
+        "email": "alex.oauth@gmail.com",
+        "full_name": "Alex Google",
+        "avatar_url": "https://example.com/avatar.jpg"
+    }
+    resp = await client.post("/api/v1/auth/oauth", json=google_payload)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert "access_token" in data
+    assert "refresh_token" in data
+
+    # Verify user profile created
+    token = data["access_token"]
+    me_resp = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_resp.status_code == 200
+    me = me_resp.json()["data"]
+    assert me["email"] == "alex.oauth@gmail.com"
+    assert me["full_name"] == "Alex Google"
+    assert me["is_verified"] is True
+
+    # 2. Apple OAuth login
+    apple_payload = {
+        "provider": "apple",
+        "email": "alex.apple@privaterelay.appleid.com",
+        "full_name": "Alex Apple"
+    }
+    apple_resp = await client.post("/api/v1/auth/oauth", json=apple_payload)
+    assert apple_resp.status_code == 200
+    assert "access_token" in apple_resp.json()["data"]
+

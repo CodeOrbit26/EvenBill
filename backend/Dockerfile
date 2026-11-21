@@ -1,5 +1,6 @@
-# Multi-stage Python Dockerfile for EvenBill Backend
-FROM python:3.11-slim as builder
+# Production Hardened Multi-Stage Dockerfile for EvenBill Backend
+# Builder Stage
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
@@ -9,22 +10,42 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Final Runtime Image
-FROM python:3.11-slim
+# Final Minimal Runtime Stage
+FROM python:3.11-slim AS runner
 
 WORKDIR /app
 
-# Copy python packages from builder
-COPY --from=builder /root/.local /root/.local
-ENV PATH=/root/.local/bin:$PATH
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+# Install curl for container orchestration health checks
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy application source
-COPY . .
+# Create dedicated non-root user and group
+RUN groupadd -g 10001 evenbill && \
+    useradd -u 10001 -g evenbill -s /bin/bash -m evenbill
 
+# Copy installed dependencies from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code with proper ownership
+COPY --chown=evenbill:evenbill . /app
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    ENVIRONMENT=production \
+    PORT=8000
+
+# Drop root privileges
+USER evenbill
+
+# Expose internal port
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Orchestrator container healthcheck
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health/live || exit 1
+
+# Production WSGI/ASGI entrypoint with 4 worker processes
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--proxy-headers", "--forwarded-allow-ips=*"]

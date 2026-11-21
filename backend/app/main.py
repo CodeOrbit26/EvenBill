@@ -9,9 +9,12 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from app.core.config import settings
+from app.core.security_headers import SecurityHeadersMiddleware
+from app.core.logging import CorrelationIdMiddleware
 from app.db.session import engine, Base
 import app.models  # Ensure all ORM models are registered with Base.metadata
 from app.api.v1.router import api_router
+from app.api.v1.endpoints import health
 
 
 @asynccontextmanager
@@ -33,12 +36,18 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS Middleware
+# Correlation ID and Structured Logging (outermost)
+app.add_middleware(CorrelationIdMiddleware)
+
+# Strict Security Headers & CSRF Middleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS Middleware (narrowly restricted for production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -56,6 +65,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "meta": {"version": settings.VERSION}
         }
     )
+
+# Root-level health probes for load balancers / container orchestrators
+app.include_router(health.router)
 
 # Mount API Routers
 app.include_router(api_router, prefix=settings.API_V1_STR)
