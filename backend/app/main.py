@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from sqlalchemy.exc import IntegrityError, DBAPIError
 
 from app.core.config import settings
 from app.core.security_headers import SecurityHeadersMiddleware
@@ -62,6 +63,42 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "success": False,
             "data": None,
             "error": error_msg,
+            "meta": {"version": settings.VERSION}
+        }
+    )
+
+# Conflict and Database Concurrency Error Handlers (HTTP 409)
+@app.exception_handler(IntegrityError)
+async def integrity_exception_handler(request: Request, exc: IntegrityError):
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "success": False,
+            "data": None,
+            "error": "A conflict occurred with an existing resource or constraint (e.g. duplicate membership or already-claimed participant).",
+            "meta": {"version": settings.VERSION}
+        }
+    )
+
+@app.exception_handler(DBAPIError)
+async def dbapi_exception_handler(request: Request, exc: DBAPIError):
+    err_str = str(exc.orig) if hasattr(exc, "orig") else str(exc)
+    if "Concurrent join failed" in err_str or "already been claimed" in err_str or "violates unique constraint" in err_str or "last active OWNER" in err_str:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "success": False,
+                "data": None,
+                "error": "The participant or invitation has already been claimed or an ownership constraint conflict occurred.",
+                "meta": {"version": settings.VERSION}
+            }
+        )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "success": False,
+            "data": None,
+            "error": "Internal database error occurred.",
             "meta": {"version": settings.VERSION}
         }
     )

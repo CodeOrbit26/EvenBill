@@ -12,6 +12,7 @@ import '../../core/widgets/feedback/error_state_view.dart';
 import '../../core/widgets/inputs/app_text_field.dart';
 import '../../core/di/injection.dart';
 import '../../core/models/group_model.dart';
+import '../../core/network/api_client.dart';
 import 'create_group_bottom_sheet.dart';
 
 class GroupsListScreen extends StatefulWidget {
@@ -141,8 +142,19 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                         }
                       } catch (e) {
                         setDialogState(() => isJoining = false);
-                        if (ctx.mounted) {
-                          AppSnackbar.showError(ctx, 'Failed to join group: $e');
+                        if (e is ApiException && e.statusCode == 409) {
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            AppSnackbar.showWarning(
+                              context,
+                              'You are already a member or this invite code was already claimed. Refreshing groups...',
+                            );
+                            _loadGroups();
+                          }
+                        } else {
+                          if (ctx.mounted) {
+                            AppSnackbar.showError(ctx, 'Failed to join group: $e');
+                          }
                         }
                       }
                     },

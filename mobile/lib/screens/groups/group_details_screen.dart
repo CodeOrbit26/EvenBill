@@ -17,6 +17,7 @@ import '../../core/di/injection.dart';
 import '../../core/models/group_model.dart';
 import '../../core/models/expense_model.dart';
 import '../../core/models/group_invitation_model.dart';
+import '../../core/network/api_client.dart';
 import '../expenses/split_preset_picker_modal.dart';
 
 class GroupDetailsScreen extends StatefulWidget {
@@ -197,8 +198,19 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> with SingleTick
                                 }
                               } catch (e) {
                                 setSheetState(() => isAdding = false);
-                                if (sheetContext.mounted) {
-                                  AppSnackbar.showError(sheetContext, e.toString());
+                                if (e is ApiException && e.statusCode == 409) {
+                                  if (sheetContext.mounted) Navigator.pop(sheetContext);
+                                  await _loadData();
+                                  if (mounted) {
+                                    AppSnackbar.showWarning(
+                                      context,
+                                      'This member is already in the group or was added concurrently. Refreshing...',
+                                    );
+                                  }
+                                } else {
+                                  if (sheetContext.mounted) {
+                                    AppSnackbar.showError(sheetContext, e.toString());
+                                  }
                                 }
                               }
                             },

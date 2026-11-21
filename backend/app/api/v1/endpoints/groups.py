@@ -6,6 +6,7 @@ import uuid
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, DBAPIError
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
@@ -228,7 +229,7 @@ async def join_group_by_code(
     mem_res = await db.execute(mem_stmt)
     existing_member = mem_res.scalar_one_or_none()
     if existing_member:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You are already a member of this group")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You are already a member of this group")
 
     # Add as member
     new_member = GroupMember(
@@ -237,7 +238,14 @@ async def join_group_by_code(
         role="MEMBER"
     )
     db.add(new_member)
-    await db.commit()
+    try:
+        await db.commit()
+    except (IntegrityError, DBAPIError):
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conflict joining group: membership or claim already exists."
+        )
 
     return APIResponse(data=GroupResponse(
         id=group.id,
@@ -294,7 +302,7 @@ async def add_group_member(
             GroupMember.user_id == target_user.id
         ))
         if existing_mem.scalar_one_or_none():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User is already a member of this group")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User is already a member of this group")
     else:
         if not clean_email and not clean_phone:
             dup_stmt = (
@@ -305,7 +313,7 @@ async def add_group_member(
             dup_res = await db.execute(dup_stmt)
             if dup_res.scalar_one_or_none():
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_409_CONFLICT,
                     detail="A member with this name is already in the group (add email or phone to distinguish)"
                 )
 
@@ -337,8 +345,15 @@ async def add_group_member(
         role="MEMBER",
     )
     db.add(new_member)
-    await db.commit()
-    await db.refresh(new_member)
+    try:
+        await db.commit()
+        await db.refresh(new_member)
+    except (IntegrityError, DBAPIError):
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conflict adding member: user may already be a member or concurrently added."
+        )
 
     return APIResponse(data=GroupMemberResponse(
         id=new_member.id,
@@ -556,6 +571,9 @@ async def accept_invitation(
     if not inv:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation not found")
 
+    if inv.status == "ACCEPTED":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This invitation has already been accepted")
+
     if inv.status == "REVOKED":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This invitation has been revoked")
 
@@ -585,6 +603,13 @@ async def accept_invitation(
         db.add(GroupMember(group_id=inv.group_id, user_id=current_user.id, role="MEMBER"))
 
     inv.status = "ACCEPTED"
-    await db.commit()
+    try:
+        await db.commit()
+    except (IntegrityError, DBAPIError):
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conflict accepting invitation: already accepted or member already in group."
+        )
     return APIResponse(data={"accepted": True, "group_id": inv.group_id})
 
