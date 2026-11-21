@@ -263,3 +263,4 @@ async def test_reject_deactivated_user(
     )
     assert res.status_code == 403
     assert "deactivated" in res.json().get("detail", "").lower()
+

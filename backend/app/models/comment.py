@@ -31,3 +31,4 @@ class ExpenseComment(Base):
 
     user = relationship("Profile")
     expense = relationship("Expense", back_populates="comments")
+

@@ -28,3 +28,4 @@ class NotificationPreference(Base):
     )
 
     user = relationship("Profile", back_populates="notification_preferences")
+

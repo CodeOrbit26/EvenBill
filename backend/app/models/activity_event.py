@@ -27,3 +27,4 @@ class ActivityEvent(Base):
 
     user = relationship("Profile")
     group = relationship("Group")
+

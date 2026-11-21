@@ -136,3 +136,4 @@ class SupabaseJWTVerifier:
                 detail=f"Could not validate credentials: {str(e)}",
                 headers={"WWW-Authenticate": "Bearer"}
             )
+

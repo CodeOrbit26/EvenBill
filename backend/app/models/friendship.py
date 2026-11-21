@@ -33,3 +33,4 @@ class Friendship(Base):
 
     user = relationship("Profile", foreign_keys=[user_id])
     friend = relationship("Profile", foreign_keys=[friend_id])
+
