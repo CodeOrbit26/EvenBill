@@ -1,9 +1,8 @@
 """
 EvenBill FastAPI Route Dependencies
-Handles token extraction, user authentication, and subscription role enforcement.
+Handles token extraction, Supabase JWKS cryptographic verification, and user resolution.
 """
 
-import jwt
 from typing import AsyncGenerator
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -11,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
-from app.core.security import SecurityUtils
+from app.core.supabase_jwt import SupabaseJWTVerifier
 from app.db.session import get_db
 from app.models.user import User
 
@@ -22,42 +21,47 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
     db: AsyncSession = Depends(get_db)
 ) -> User:
+    """
+    Extracts, validates, and resolves the authenticated user:
+    1. Receives Bearer token from Authorization header
+    2. Cryptographically verifies signature against Supabase JWKS or symmetric secret
+    3. Validates issuer, audience, and expiration claims
+    4. Resolves authenticated user UUID strictly from token subject (never trusts client user ID)
+    5. Syncs profile if missing, and verifies account active status
+    """
     token = credentials.credentials
-    try:
-        payload = SecurityUtils.decode_token(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM]
-        )
-        if payload.get("type") != "access":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token type: expected access token"
-            )
-        user_id: str = payload.get("sub")
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token payload missing subject identifier"
-            )
-    except HTTPException:
-        raise
-    except jwt.ExpiredSignatureError:
+    payload = SupabaseJWTVerifier.verify_token(token)
+
+    user_id: str = payload.get("sub")
+    if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token expired",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
+            detail="Token payload missing subject identifier",
             headers={"WWW-Authenticate": "Bearer"}
         )
 
     stmt = select(User).where(User.id == user_id).options(selectinload(User.subscriptions))
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
+
+    # Auto-synchronize profile from verified Supabase token if not yet present
+    if not user:
+        email = payload.get("email") or payload.get("user_metadata", {}).get("email")
+        if email:
+            full_name = payload.get("user_metadata", {}).get("full_name") or email.split("@")[0]
+            default_currency = payload.get("user_metadata", {}).get("default_currency") or "USD"
+            user = User(
+                id=user_id,
+                email=email,
+                full_name=full_name,
+                default_currency=default_currency,
+                is_active=True
+            )
+            db.add(user)
+            await db.commit()
+            stmt = select(User).where(User.id == user_id).options(selectinload(User.subscriptions))
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
 
     if not user:
         raise HTTPException(

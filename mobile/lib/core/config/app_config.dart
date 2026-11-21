@@ -28,5 +28,22 @@ class AppConfig {
 
     return 'http://127.0.0.1:8000/api/v1';
   }
-}
 
+  /// Supabase Configuration
+  /// Injected at compile/run time via:
+  /// `--dart-define=SUPABASE_URL=https://<project-ref>.supabase.co`
+  /// `--dart-define=SUPABASE_PUBLISHABLE_KEY=sb_publishable_...`
+  static const String supabaseUrl = String.fromEnvironment(
+    'SUPABASE_URL',
+    defaultValue: 'https://aniqkrmuurmhwxkiahxv.supabase.co',
+  );
+
+  static const String supabasePublishableKey = String.fromEnvironment(
+    'SUPABASE_PUBLISHABLE_KEY',
+    defaultValue: 'sb_publishable_GSrWtiv5G3Egh6YjoMz28Q_PXoMt-x5',
+  );
+
+  /// Check whether Supabase configuration is present
+  static bool get isSupabaseConfigured =>
+      supabaseUrl.isNotEmpty && supabasePublishableKey.isNotEmpty;
+}

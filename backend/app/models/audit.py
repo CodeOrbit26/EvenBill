@@ -5,6 +5,7 @@ Ensures non-repudiation and complete traceability for all financial mutations.
 
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 from sqlalchemy import String, DateTime, Text, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
@@ -17,9 +18,9 @@ class FinancialAuditLog(Base):
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)  # EXPENSE, SETTLEMENT, SPLIT
     entity_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     action: Mapped[str] = mapped_column(String(32), nullable=False)  # CREATE, UPDATE, DELETE
-    performed_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    previous_state: Mapped[str] = mapped_column(Text, nullable=True)
-    new_state: Mapped[str] = mapped_column(Text, nullable=True)
+    performed_by: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False)
+    previous_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    new_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -28,4 +29,4 @@ class FinancialAuditLog(Base):
     )
 
     # Relationships
-    performer = relationship("User")
+    performer = relationship("Profile")

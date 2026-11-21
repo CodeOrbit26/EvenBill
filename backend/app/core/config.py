@@ -25,6 +25,36 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: Optional[str] = Field(default="34497581041-32g5m3c4oet10tbf1m6cr03m1eugqc50.apps.googleusercontent.com", validation_alias="GOOGLE_CLIENT_ID")
     GOOGLE_CLIENT_SECRET: Optional[str] = Field(default=None, validation_alias="GOOGLE_CLIENT_SECRET")
 
+    # Supabase Configuration
+    SUPABASE_URL: str = Field(
+        default="https://aniqkrmuurmhwxkiahxv.supabase.co",
+        validation_alias="SUPABASE_URL"
+    )
+    SUPABASE_ANON_KEY: str = Field(
+        default="sb_publishable_GSrWtiv5G3Egh6YjoMz28Q_PXoMt-x5",
+        validation_alias="SUPABASE_ANON_KEY"
+    )
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = Field(
+        default=None,
+        validation_alias="SUPABASE_SERVICE_ROLE_KEY"
+    )
+    SUPABASE_JWT_SECRET: Optional[str] = Field(
+        default=None,
+        validation_alias="SUPABASE_JWT_SECRET"
+    )
+    SUPABASE_AUDIENCE: str = Field(
+        default="authenticated",
+        validation_alias="SUPABASE_AUDIENCE"
+    )
+
+    @property
+    def supabase_jwks_url(self) -> str:
+        return f"{self.SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
+    @property
+    def supabase_issuer(self) -> str:
+        return f"{self.SUPABASE_URL.rstrip('/')}/auth/v1"
+
     # Database
     # Defaults to async SQLite for local lightweight development and testing; easily switched to PostgreSQL
     DATABASE_URL: str = Field(

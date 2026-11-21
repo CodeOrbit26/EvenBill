@@ -1,7 +1,9 @@
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../network/api_client.dart';
 import '../network/token_storage.dart';
 import '../models/user_model.dart';
 import '../constants/api_constants.dart';
+import '../services/supabase_service.dart';
 
 class AuthRepository {
   final ApiClient apiClient;
@@ -19,7 +21,53 @@ class AuthRepository {
     String? phoneNumber,
     String defaultCurrency = 'USD',
   }) async {
-    // 1. Register account
+    final client = SupabaseService.client;
+    if (client != null) {
+      try {
+        final res = await client.auth.signUp(
+          email: email.trim().toLowerCase(),
+          password: password,
+          data: {
+            'full_name': fullName.trim(),
+            'default_currency': defaultCurrency.toUpperCase(),
+            if (phoneNumber != null && phoneNumber.trim().isNotEmpty)
+              'phone_number': phoneNumber.trim(),
+          },
+        );
+
+        final session = res.session;
+        if (session != null) {
+          await tokenStorage.saveTokens(
+            accessToken: session.accessToken,
+            refreshToken: session.refreshToken ?? '',
+          );
+        }
+
+        // Synchronize / verify user profile with FastAPI backend authority
+        try {
+          return await getMe();
+        } catch (_) {
+          final user = UserModel(
+            id: res.user?.id ?? '',
+            email: email.trim().toLowerCase(),
+            fullName: fullName.trim(),
+            phoneNumber: phoneNumber,
+            defaultCurrency: defaultCurrency.toUpperCase(),
+            isActive: true,
+            createdAt: DateTime.now(),
+          );
+          await tokenStorage.saveUser(user);
+          return user;
+        }
+      } catch (e) {
+        if (e is AuthException) {
+          throw ApiException(e.message, statusCode: 400);
+        }
+        rethrow;
+      }
+    }
+
+    // Fallback for mock/offline testing environments
     final payload = <String, dynamic>{
       'email': email.trim().toLowerCase(),
       'password': password,
@@ -34,7 +82,6 @@ class AuthRepository {
       data: payload,
     );
 
-    // 2. Automatically log in to establish session
     return await login(email: email, password: password);
   }
 
@@ -42,6 +89,45 @@ class AuthRepository {
     required String email,
     required String password,
   }) async {
+    final client = SupabaseService.client;
+    if (client != null) {
+      try {
+        final res = await client.auth.signInWithPassword(
+          email: email.trim(),
+          password: password,
+        );
+
+        final session = res.session;
+        if (session != null) {
+          await tokenStorage.saveTokens(
+            accessToken: session.accessToken,
+            refreshToken: session.refreshToken ?? '',
+          );
+        }
+
+        try {
+          return await getMe();
+        } catch (_) {
+          final user = UserModel(
+            id: res.user?.id ?? '',
+            email: email.trim(),
+            fullName: (res.user?.userMetadata?['full_name'] as String?) ?? 'User',
+            defaultCurrency: (res.user?.userMetadata?['default_currency'] as String?) ?? 'USD',
+            isActive: true,
+            createdAt: DateTime.now(),
+          );
+          await tokenStorage.saveUser(user);
+          return user;
+        }
+      } catch (e) {
+        if (e is AuthException) {
+          throw ApiException(e.message, statusCode: 401, isAuthError: true);
+        }
+        rethrow;
+      }
+    }
+
+    // Fallback if Supabase not initialized
     final res = await apiClient.post(
       ApiConstants.login,
       data: {
@@ -122,6 +208,21 @@ class AuthRepository {
   }
 
   Future<String> refreshToken() async {
+    final client = SupabaseService.client;
+    if (client != null) {
+      try {
+        final res = await client.auth.refreshSession();
+        final session = res.session;
+        if (session != null) {
+          await tokenStorage.saveTokens(
+            accessToken: session.accessToken,
+            refreshToken: session.refreshToken ?? '',
+          );
+          return session.accessToken;
+        }
+      } catch (_) {}
+    }
+
     final token = await tokenStorage.getRefreshToken();
     if (token == null || token.isEmpty) {
       throw ApiException('No refresh token available', statusCode: 401, isAuthError: true);
@@ -165,6 +266,13 @@ class AuthRepository {
   }
 
   Future<void> signOut() async {
+    try {
+      final client = SupabaseService.client;
+      if (client != null) {
+        await client.auth.signOut();
+      }
+    } catch (_) {}
+
     try {
       final refresh = await tokenStorage.getRefreshToken();
       if (refresh != null && refresh.isNotEmpty) {

@@ -13,7 +13,7 @@ from app.db.session import Base
 
 
 class GroupPendingParticipant(Base):
-    __tablename__ = "group_pending_participants"
+    __tablename__ = "pending_participants"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -21,7 +21,7 @@ class GroupPendingParticipant(Base):
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     phone_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False)  # ACTIVE, CLAIMED, REMOVED
-    claimed_by_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    claimed_by_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -35,5 +35,7 @@ class GroupPendingParticipant(Base):
 
     # Relationships
     group = relationship("Group", back_populates="pending_participants")
-    claimed_by_user = relationship("User", foreign_keys=[claimed_by_user_id])
+    claimed_by_user = relationship("Profile", foreign_keys=[claimed_by_user_id])
 
+
+PendingParticipant = GroupPendingParticipant

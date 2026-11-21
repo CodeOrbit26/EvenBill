@@ -1,11 +1,13 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/user_model.dart';
 import '../network/api_client.dart';
 import '../repositories/auth_repository.dart';
 import '../network/token_storage.dart';
 import '../di/injection.dart';
+import '../services/supabase_service.dart';
 
 /// Authentication state machine states
 enum AuthStatus { initializing, unauthenticated, authenticated, expired, error }
@@ -95,6 +97,25 @@ class AuthNotifier extends Notifier<AuthState> {
       }
     };
 
+    // Listen to Supabase auth state change events if active
+    final client = SupabaseService.client;
+    if (client != null) {
+      client.auth.onAuthStateChange.listen((data) {
+        final AuthChangeEvent event = data.event;
+        final Session? session = data.session;
+        if (!ref.mounted) return;
+
+        if (event == AuthChangeEvent.signedOut) {
+          state = const AuthState.unauthenticated();
+        } else if (event == AuthChangeEvent.tokenRefreshed && session != null) {
+          _tokenStorage.saveTokens(
+            accessToken: session.accessToken,
+            refreshToken: session.refreshToken ?? '',
+          );
+        }
+      });
+    }
+
     // Auto-restore session asynchronously on app start
     Future.microtask(() {
       if (ref.mounted) {
@@ -109,6 +130,18 @@ class AuthNotifier extends Notifier<AuthState> {
   Future<void> restoreSession() async {
     if (!ref.mounted) return;
     state = const AuthState.initializing();
+
+    // Synchronize Supabase active session to token storage if present
+    final client = SupabaseService.client;
+    if (client != null) {
+      final currentSession = client.auth.currentSession;
+      if (currentSession != null) {
+        await _tokenStorage.saveTokens(
+          accessToken: currentSession.accessToken,
+          refreshToken: currentSession.refreshToken ?? '',
+        );
+      }
+    }
 
     final hasAccess = await _tokenStorage.hasAccessToken();
     final refreshToken = await _tokenStorage.getRefreshToken();

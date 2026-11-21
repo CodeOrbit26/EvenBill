@@ -1,5 +1,5 @@
 """
-EvenBill Expense, Payer, Split, and Receipt ORM Models
+EvenBill Expense, Payer, Split, Allocation, and Receipt ORM Models
 Uses Numeric(18, 4) for zero floating-point loss.
 Supports Idempotency, Refunds/Reimbursements, and Multi-Currency exchange records.
 """
@@ -22,11 +22,11 @@ class Expense(Base):
     original_expense_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="SET NULL"), nullable=True)
 
     group_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
-    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False, index=True)
     description: Mapped[str] = mapped_column(String(255), nullable=False)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
-    
+
     # Frozen Multi-Currency Conversion Snapshot
     base_currency_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     exchange_rate: Mapped[Decimal] = mapped_column(Numeric(18, 8), default=Decimal("1.0"), nullable=False)
@@ -61,7 +61,8 @@ class Expense(Base):
     payers = relationship("ExpensePayer", back_populates="expense", cascade="all, delete-orphan")
     splits = relationship("ExpenseSplit", back_populates="expense", cascade="all, delete-orphan")
     receipts = relationship("Receipt", back_populates="expense", cascade="all, delete-orphan")
-    creator = relationship("User", foreign_keys=[created_by])
+    comments = relationship("ExpenseComment", back_populates="expense", cascade="all, delete-orphan")
+    creator = relationship("Profile", foreign_keys=[created_by])
 
 
 class ExpensePayer(Base):
@@ -72,12 +73,12 @@ class ExpensePayer(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False, index=True)
     amount_paid: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
 
     # Relationships
     expense = relationship("Expense", back_populates="payers")
-    user = relationship("User")
+    user = relationship("Profile")
 
 
 class ExpenseSplit(Base):
@@ -88,13 +89,31 @@ class ExpenseSplit(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False, index=True)
     owed_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     share_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4), nullable=True)
 
     # Relationships
     expense = relationship("Expense", back_populates="splits")
-    user = relationship("User")
+    user = relationship("Profile")
+
+
+# Aliases for unified nomenclature
+ExpenseAllocation = ExpenseSplit
+
+
+class ExpenseParticipant(Base):
+    __tablename__ = "expense_participants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=True, index=True)
+    pending_participant_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("pending_participants.id", ondelete="CASCADE"), nullable=True, index=True)
+    share_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    share_percentage: Mapped[Optional[Decimal]] = mapped_column(Numeric(7, 4), nullable=True)
+
+    expense = relationship("Expense")
+    user = relationship("Profile", foreign_keys=[user_id])
 
 
 class Receipt(Base):
@@ -102,13 +121,13 @@ class Receipt(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     expense_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=True, index=True)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
     s3_key: Mapped[str] = mapped_column(String(512), nullable=False)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     mime_type: Mapped[str] = mapped_column(String(64), nullable=False)
     content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)  # SHA-256 for duplicate detection
-    
+
     ocr_status: Mapped[str] = mapped_column(String(32), default="NONE", nullable=False)  # NONE, PENDING, COMPLETED, FAILED
     raw_ocr_payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     extracted_merchant: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -127,4 +146,7 @@ class Receipt(Base):
 
     # Relationships
     expense = relationship("Expense", back_populates="receipts")
-    user = relationship("User")
+    user = relationship("Profile")
+
+
+ReceiptMetadata = Receipt

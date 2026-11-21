@@ -9,8 +9,11 @@ import 'screens/auth/sign_in_screen.dart';
 import 'screens/auth/registration_screen.dart';
 import 'screens/shell/app_navigation_shell.dart';
 import 'core/di/injection.dart';
+import 'core/services/supabase_service.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SupabaseService.initialize();
   runApp(const EvenBillApp(useRouter: true));
 }
 
