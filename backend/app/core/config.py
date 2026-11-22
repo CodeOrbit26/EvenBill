@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     def validate_production_configuration(self) -> "Settings":
         env = self.ENVIRONMENT.lower()
         if env in ("production", "staging"):
+            # Strip accidental surrounding quotes or whitespace
+            if self.DATABASE_URL:
+                self.DATABASE_URL = self.DATABASE_URL.strip().strip('"\'')
+
             # 1. DATABASE_URL must not silently fall back to SQLite in production/staging
             if not self.DATABASE_URL or "sqlite" in self.DATABASE_URL.lower():
                 raise ValueError(

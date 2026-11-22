@@ -20,6 +20,8 @@ from app.api.v1.endpoints import health
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.core.db_diagnostic import diagnose_database_url
+    diagnose_database_url(settings.DATABASE_URL)
     # Auto-create tables on startup for development and local testing
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

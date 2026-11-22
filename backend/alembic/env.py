@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 from app.core.config import settings
+from app.core.db_diagnostic import diagnose_database_url
 from app.db.session import Base
 import app.models  # load all models
 
@@ -19,6 +20,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
+    diagnose_database_url(settings.DATABASE_URL)
     url = settings.DATABASE_URL
     context.configure(
         url=url,
@@ -38,6 +40,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with async engine."""
+    diagnose_database_url(settings.DATABASE_URL)
     configuration = config.get_section(config.config_ini_section) or {}
     configuration["sqlalchemy.url"] = settings.DATABASE_URL
     connect_args = {"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {}
