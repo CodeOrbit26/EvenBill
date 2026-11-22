@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../theme/app_colors.dart';
 import '../../theme/app_spacing.dart';
-import '../../theme/app_typography.dart';
 
 /// Crisp official Google 'G' logo drawn using Vector Canvas
 class GoogleLogoPainter extends CustomPainter {

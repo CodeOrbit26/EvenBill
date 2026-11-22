@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
-import '../../core/widgets/buttons/primary_button.dart';
-import '../../core/widgets/feedback/app_snackbar.dart';
 import '../../core/di/injection.dart';
 import '../../core/models/bank_model.dart';
 
@@ -166,6 +164,13 @@ class _BankImportSheetState extends State<BankImportSheet> {
               ),
             ],
           ),
+          if (_status?.providerName != null) ...[
+            const SizedBox(height: 2),
+            Text(
+              'Provider: ${_status!.providerName}',
+              style: AppTypography.labelSmall().copyWith(fontSize: 10, color: AppColors.secondaryEvergreen),
+            ),
+          ],
           const SizedBox(height: 4),
           Text(
             'Read-only financial transactions are synced through approved institutional providers. Explicit consent is required. No bank imports are conducted without certified regulatory authorization.',

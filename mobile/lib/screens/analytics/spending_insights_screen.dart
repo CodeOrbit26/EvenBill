@@ -3,7 +3,6 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/widgets/buttons/primary_button.dart';
-import '../../core/widgets/feedback/app_snackbar.dart';
 import '../../core/di/injection.dart';
 import '../../core/models/spending_insights_model.dart';
 import '../../core/models/entitlement_model.dart';
@@ -84,7 +83,6 @@ class _SpendingInsightsScreenState extends State<SpendingInsightsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     final isPro = _entitlements?.isPro ?? false;
 
     return Scaffold(

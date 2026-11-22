@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
-import '../../core/widgets/buttons/primary_button.dart';
 import '../../core/di/injection.dart';
 import '../../core/models/expense_model.dart';
 import 'expense_details_screen.dart';

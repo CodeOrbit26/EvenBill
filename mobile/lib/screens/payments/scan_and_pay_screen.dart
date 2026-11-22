@@ -6,7 +6,6 @@ import '../../core/models/expense_model.dart';
 import '../../core/models/user_model.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
-import '../../core/theme/app_typography.dart';
 import '../../core/widgets/buttons/primary_button.dart';
 import '../../core/widgets/feedback/app_snackbar.dart';
 import '../expenses/receipt_review_modal.dart';
@@ -145,37 +144,6 @@ class _ScanAndPayScreenState extends State<ScanAndPayScreen> with SingleTickerPr
         context,
         'QR Scanned: $name ($vpa)',
       );
-    }
-  }
-
-  void _parseRawQr(String rawText) {
-    final text = rawText.trim();
-    if (text.isEmpty) return;
-
-    if (text.startsWith('upi://pay')) {
-      try {
-        final uri = Uri.parse(text);
-        final pa = uri.queryParameters['pa'];
-        final pn = uri.queryParameters['pn'];
-        final am = uri.queryParameters['am'];
-        final tn = uri.queryParameters['tn'];
-
-        setState(() {
-          if (pa != null && pa.isNotEmpty) _payeeVpaController.text = pa;
-          if (pn != null && pn.isNotEmpty) _payeeNameController.text = Uri.decodeComponent(pn);
-          if (am != null && am.isNotEmpty) _amountController.text = am;
-          if (tn != null && tn.isNotEmpty) _noteController.text = Uri.decodeComponent(tn);
-        });
-        AppSnackbar.showSuccess(context, 'UPI QR decoded successfully!');
-        return;
-      } catch (_) {}
-    }
-
-    if (text.contains('@')) {
-      setState(() => _payeeVpaController.text = text);
-      AppSnackbar.showInfo(context, 'UPI ID detected: $text');
-    } else {
-      AppSnackbar.showInfo(context, 'Scanned data: $text');
     }
   }
 

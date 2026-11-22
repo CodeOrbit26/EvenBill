@@ -8,15 +8,16 @@ from typing import List, Optional, Dict
 from datetime import date, datetime
 from decimal import Decimal
 from pydantic import BaseModel, Field, ConfigDict
+from app.schemas.common import UUIDStr
 
 
 class PayerItem(BaseModel):
-    user_id: str
+    user_id: UUIDStr = Field(..., json_schema_extra={"format": "uuid", "example": "4b684cb3-0ea1-4566-b333-e99d79a78bc5"})
     amount_paid: Decimal = Field(..., gt=Decimal("0"))
 
 
 class SplitItem(BaseModel):
-    user_id: str
+    user_id: UUIDStr = Field(..., json_schema_extra={"format": "uuid", "example": "4b684cb3-0ea1-4566-b333-e99d79a78bc5"})
     owed_amount: Decimal = Field(..., ge=Decimal("0"))
     share_quantity: Optional[Decimal] = None
 
@@ -24,15 +25,15 @@ class SplitItem(BaseModel):
 class ItemizedItemInput(BaseModel):
     description: str = Field(..., min_length=1, max_length=150)
     amount: Decimal = Field(..., gt=Decimal("0"))
-    participant_ids: List[str] = Field(..., min_length=1)
+    participant_ids: List[UUIDStr] = Field(..., min_length=1, json_schema_extra={"example": ["4b684cb3-0ea1-4566-b333-e99d79a78bc5"]})
 
 
 class ExpenseCreate(BaseModel):
     idempotency_key: Optional[str] = Field(None, max_length=64)
     transaction_type: str = Field(default="EXPENSE", description="EXPENSE, REIMBURSEMENT, REFUND")
-    original_expense_id: Optional[str] = None
+    original_expense_id: Optional[UUIDStr] = Field(None, json_schema_extra={"format": "uuid", "example": "4b684cb3-0ea1-4566-b333-e99d79a78bc5"})
 
-    group_id: Optional[str] = None
+    group_id: Optional[UUIDStr] = Field(None, json_schema_extra={"format": "uuid", "example": "4b684cb3-0ea1-4566-b333-e99d79a78bc5"})
     description: str = Field(..., min_length=1, max_length=255)
     total_amount: Decimal = Field(..., gt=Decimal("0"))
     currency: str = Field(default="USD", min_length=3, max_length=3)
@@ -50,7 +51,7 @@ class ExpenseCreate(BaseModel):
 
     # Splitting parameters depending on split_type:
     # 1. EQUAL: list of participant user IDs
-    participant_ids: Optional[List[str]] = None
+    participant_ids: Optional[List[UUIDStr]] = Field(None, json_schema_extra={"example": ["4b684cb3-0ea1-4566-b333-e99d79a78bc5"]})
     # 2. EXACT: list of SplitItem
     splits: Optional[List[SplitItem]] = None
     # 3. PERCENTAGE: dict of user_id -> percentage (summing to 100)
@@ -77,7 +78,7 @@ class ExpenseUpdate(BaseModel):
     split_type: Optional[str] = None
 
     payers: Optional[List[PayerItem]] = None
-    participant_ids: Optional[List[str]] = None
+    participant_ids: Optional[List[UUIDStr]] = Field(None, json_schema_extra={"example": ["4b684cb3-0ea1-4566-b333-e99d79a78bc5"]})
     splits: Optional[List[SplitItem]] = None
     percentages: Optional[Dict[str, Decimal]] = None
     shares: Optional[Dict[str, Decimal]] = None

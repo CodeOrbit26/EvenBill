@@ -8,7 +8,6 @@ import '../../core/models/expense_model.dart';
 import '../overview/overview_screen.dart';
 import '../groups/groups_list_screen.dart';
 import '../groups/group_details_screen.dart';
-import '../friends/friends_list_screen.dart';
 import '../friends/friend_details_screen.dart';
 import '../activity/activity_screen.dart';
 import '../profile/profile_settings_screen.dart';

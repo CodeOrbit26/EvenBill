@@ -9,7 +9,6 @@ import '../../core/widgets/financial/debt_indicator_badge.dart';
 import '../../core/widgets/financial/expense_row.dart';
 import '../../core/widgets/financial/amount_display.dart';
 import '../../core/widgets/feedback/app_snackbar.dart';
-import '../../core/widgets/feedback/loading_skeleton.dart';
 import '../../core/widgets/feedback/empty_state_view.dart';
 import '../../core/widgets/feedback/error_state_view.dart';
 import '../../core/widgets/inputs/app_text_field.dart';

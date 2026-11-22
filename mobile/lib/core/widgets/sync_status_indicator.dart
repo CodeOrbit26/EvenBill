@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:evenbill/core/sync/sync_engine.dart';
-import 'package:evenbill/core/sync/sync_queue.dart';
 
 class SyncStatusIndicator extends StatelessWidget {
   final SyncEngine syncEngine;

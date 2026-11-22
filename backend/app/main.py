@@ -97,6 +97,20 @@ async def dbapi_exception_handler(request: Request, exc: DBAPIError):
     err_orig = exc.orig if hasattr(exc, "orig") else exc
     err_type = type(err_orig).__name__
     err_str = str(err_orig)
+    if "invalid input syntax for type uuid" in err_str.lower():
+        logger.warning(
+            f"Invalid UUID input syntax ({err_type}) on {request.method} {request.url.path}: {redact_sensitive_data(err_str)}",
+            extra={"correlation_id": correlation_id}
+        )
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={
+                "success": False,
+                "data": None,
+                "error": "Invalid UUID format provided. Expected 36-character hexadecimal UUID format.",
+                "meta": {"version": settings.VERSION}
+            }
+        )
     if "Concurrent join failed" in err_str or "already been claimed" in err_str or "violates unique constraint" in err_str or "last active OWNER" in err_str:
         logger.warning(
             f"Database conflict ({err_type}) on {request.method} {request.url.path}: {redact_sensitive_data(err_str)}",

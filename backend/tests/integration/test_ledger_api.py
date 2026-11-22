@@ -600,3 +600,70 @@ async def test_direct_add_group_member_and_directional_settlement(client: AsyncC
     assert forged.status_code == 403
 
 
+@pytest.mark.asyncio
+async def test_uuid_validation_and_conflict_handling(client: AsyncClient):
+    """
+    Verify Swagger placeholder 'string' or invalid UUIDs return HTTP 422 (not HTTP 500),
+    and duplicate group join / membership returns documented HTTP 409.
+    """
+    user = await register_and_login(client, "uuid_val_user@evenbill.app", "UUID Test User")
+
+    # 1. Invalid UUID placeholder 'string' as group_id in expense creation -> HTTP 422
+    invalid_exp = await client.post("/api/v1/expenses/", headers=user["headers"], json={
+        "group_id": "string",
+        "description": "Invalid UUID test",
+        "total_amount": 50.00,
+        "currency": "USD",
+        "split_type": "EQUAL",
+        "participant_ids": ["string"]
+    })
+    assert invalid_exp.status_code == 422
+    assert "Invalid UUID" in str(invalid_exp.json()) or "validation_error" in str(invalid_exp.json()) or "detail" in invalid_exp.json()
+
+    # 2. Invalid UUID in settlements -> HTTP 422
+    invalid_stl = await client.post("/api/v1/settlements/", headers=user["headers"], json={
+        "group_id": "string",
+        "recipient_id": "string",
+        "amount": 25.00,
+        "currency": "USD",
+        "payment_method": "CASH"
+    })
+    assert invalid_stl.status_code == 422
+
+    # 3. Create real group
+    grp_resp = await client.post("/api/v1/groups/", headers=user["headers"], json={
+        "name": "Validation Group",
+        "group_type": "HOME",
+        "base_currency": "USD"
+    })
+    assert grp_resp.status_code == 201
+    group_id = grp_resp.json()["data"]["id"]
+    invite_code = grp_resp.json()["data"]["invite_code"]
+
+    # 4. Valid expense with real UUIDs -> HTTP 201
+    valid_exp = await client.post("/api/v1/expenses/", headers=user["headers"], json={
+        "group_id": group_id,
+        "description": "Valid expense with real UUID",
+        "total_amount": 25.00,
+        "currency": "USD",
+        "split_type": "EQUAL",
+        "participant_ids": [user["id"]]
+    })
+    assert valid_exp.status_code == 201
+    assert valid_exp.json()["data"]["group_id"] == group_id
+
+    # 5. Creator joining own group via invite code -> HTTP 409 (already member)
+    dup_join = await client.post(f"/api/v1/groups/join/{invite_code}", headers=user["headers"])
+    assert dup_join.status_code == 409
+    assert "already a member" in dup_join.json()["detail"].lower()
+
+    # 6. Adding creator again as member -> HTTP 409
+    dup_add = await client.post(f"/api/v1/groups/{group_id}/members", headers=user["headers"], json={
+        "email": user["email"],
+        "full_name": user["name"]
+    })
+    assert dup_add.status_code == 409
+    assert "already a member" in dup_add.json()["detail"].lower()
+
+
+

@@ -3,7 +3,6 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/widgets/avatars/user_avatar.dart';
-import '../../core/widgets/financial/amount_display.dart';
 import '../../core/widgets/feedback/app_snackbar.dart';
 import '../../core/di/injection.dart';
 import '../../core/models/user_model.dart';

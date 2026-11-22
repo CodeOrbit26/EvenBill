@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
-import '../../core/theme/app_typography.dart';
 import '../../core/widgets/buttons/action_pill.dart';
 import '../../core/widgets/financial/balance_summary_card.dart';
 import '../../core/widgets/financial/expense_row.dart';
-import '../../core/widgets/financial/amount_display.dart';
 import '../../core/widgets/feedback/empty_state_view.dart';
 import '../../core/widgets/feedback/error_state_view.dart';
 import '../../core/widgets/feedback/loading_skeleton.dart';
@@ -14,11 +12,9 @@ import '../../core/di/injection.dart';
 import '../../core/network/api_client.dart';
 import '../../core/models/activity_model.dart';
 import '../../core/models/expense_model.dart';
-import '../../core/models/user_model.dart';
 import '../../core/models/group_model.dart';
 import '../../core/widgets/financial/debt_indicator_badge.dart';
 import '../groups/create_group_bottom_sheet.dart';
-import '../activity/activity_screen.dart';
 
 class OverviewScreen extends StatefulWidget {
   final Function(ExpenseModel) onExpenseTap;
@@ -53,13 +49,11 @@ class _OverviewScreenState extends State<OverviewScreen> {
   String? _errorMessage;
   String _errorTitle = 'Unable to Load Overview';
   bool _isAuthError = false;
-  bool _isConnectionError = false;
   ActivitySummaryModel _summary = ActivitySummaryModel.empty();
   List<ActivityItemModel> _activities = [];
   List<GroupModel> _groups = [];
   String _overviewSection = 'GROUPS'; // 'GROUPS' or 'EXPENSES'
   String _activeFilter = 'ALL'; // ALL, LENT, BORROWED
-  UserModel? _currentUser;
 
   @override
   void initState() {
@@ -72,14 +66,12 @@ class _OverviewScreenState extends State<OverviewScreen> {
       _isLoading = true;
       _errorMessage = null;
       _isAuthError = false;
-      _isConnectionError = false;
     });
 
     try {
       String? activeCurrency = currencyOverride;
       try {
         final cachedUser = await Injection.tokenStorage.getCachedUser();
-        _currentUser = cachedUser;
         activeCurrency ??= cachedUser?.defaultCurrency;
       } catch (_) {}
 
@@ -111,7 +103,6 @@ class _OverviewScreenState extends State<OverviewScreen> {
           setState(() {
             _isLoading = false;
             _isAuthError = e.isAuthError;
-            _isConnectionError = e.isConnectionError;
             if (e.isAuthError) {
               _errorTitle = 'Authentication Required';
               _errorMessage = 'Your session has expired or is not authenticated. Please sign in again to view your dashboard.';
@@ -136,7 +127,6 @@ class _OverviewScreenState extends State<OverviewScreen> {
             _errorTitle = 'Unable to Load Overview';
             _errorMessage = e.toString();
             _isAuthError = false;
-            _isConnectionError = false;
           });
         }
       }
@@ -229,10 +219,9 @@ class _OverviewScreenState extends State<OverviewScreen> {
                     onTap: () async {
                       Navigator.pop(ctx);
                       try {
-                        final updated = await Injection.authRepository.updateMe(
+                        await Injection.authRepository.updateMe(
                           defaultCurrency: c['code'],
                         );
-                        _currentUser = updated;
                         widget.onCurrencyChanged?.call(c['code']!);
                         if (mounted) {
                           AppSnackbar.showSuccess(
@@ -280,17 +269,6 @@ class _OverviewScreenState extends State<OverviewScreen> {
         _loadOverviewData();
         widget.onGroupTap?.call(newGroup);
       },
-    );
-  }
-
-  void _openActivity(BuildContext context) {
-    if (widget.onActivityTap != null) {
-      widget.onActivityTap!();
-      return;
-    }
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const ActivityScreen()),
     );
   }
 

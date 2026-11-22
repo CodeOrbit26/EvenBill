@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:evenbill/core/di/injection.dart';
-import 'package:evenbill/core/models/entitlement_model.dart';
 import 'package:evenbill/core/models/expense_model.dart';
 import 'package:evenbill/core/widgets/buttons/primary_button.dart';
 import 'package:evenbill/screens/subscription/pro_paywall_screen.dart';

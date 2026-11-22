@@ -22,6 +22,7 @@ from app.schemas.group import (
 )
 from app.schemas.common import APIResponse
 from app.services.ledger_service import LedgerService
+from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/groups", tags=["Groups"])
 
@@ -318,17 +319,42 @@ async def add_group_member(
                 )
 
         # Synthetic domain keeps future real signups with clean_email free of 409 collisions.
-        target_user = User(
-            email=f"member.{uuid.uuid4().hex[:12]}@member.evenbill.local",
-            hashed_password=None,
-            full_name=clean_name,
-            phone_number=clean_phone,
-            default_currency=group.base_currency,
-            is_active=True,
-            is_verified=False,
-        )
-        db.add(target_user)
-        await db.flush()
+        synthetic_email = f"member.{uuid.uuid4().hex[:12]}@member.evenbill.local"
+        user_id = str(uuid.uuid4())
+
+        has_auth = await AuthService._check_auth_users_exists(db)
+        if has_auth:
+            await AuthService._insert_auth_user(
+                db=db,
+                user_id=user_id,
+                email=synthetic_email,
+                hashed_pw=None,
+                full_name=clean_name,
+                default_currency=group.base_currency,
+            )
+
+        p_stmt = select(User).where(User.id == user_id)
+        p_res = await db.execute(p_stmt)
+        target_user = p_res.scalar_one_or_none()
+
+        if not target_user:
+            target_user = User(
+                id=user_id,
+                email=synthetic_email,
+                hashed_password=None,
+                full_name=clean_name,
+                phone_number=clean_phone,
+                default_currency=group.base_currency,
+                is_active=True,
+                is_verified=False,
+            )
+            db.add(target_user)
+            await db.flush()
+        else:
+            target_user.full_name = clean_name
+            target_user.phone_number = clean_phone
+            target_user.default_currency = group.base_currency
+            await db.flush()
 
         if clean_email or clean_phone:
             db.add(GroupPendingParticipant(

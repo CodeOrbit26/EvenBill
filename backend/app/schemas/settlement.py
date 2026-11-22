@@ -7,12 +7,14 @@ from datetime import datetime
 from decimal import Decimal
 from pydantic import BaseModel, Field, ConfigDict
 
+from app.schemas.common import UUIDStr
+
 
 class SettlementCreate(BaseModel):
     idempotency_key: Optional[str] = Field(None, max_length=64)
-    group_id: Optional[str] = None
-    payer_id: Optional[str] = Field(None, description="Optional payer user ID; defaults to authenticated creator")
-    recipient_id: str = Field(..., description="User ID of the person receiving the payment")
+    group_id: Optional[UUIDStr] = None
+    payer_id: Optional[UUIDStr] = Field(None, description="Optional payer user ID; defaults to authenticated creator")
+    recipient_id: UUIDStr = Field(..., description="User ID of the person receiving the payment")
     amount: Decimal = Field(..., gt=Decimal("0"))
     currency: str = Field(default="USD", min_length=3, max_length=3)
     payment_method: str = Field(default="CASH", description="CASH, UPI, PAYPAL, VENMO, WISE, IN_APP")
