@@ -2,11 +2,12 @@
 EvenBill Authentication and Identity Service
 """
 
+import json
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Set
 import uuid
 import jwt
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
 from app.core.config import settings
@@ -17,10 +18,97 @@ from app.schemas.user import UserCreate, UserLogin, Token, OAuthLoginRequest
 
 
 class AuthService:
-    @staticmethod
-    async def register_user(db: AsyncSession, data: UserCreate) -> User:
+    _has_auth_users: Optional[bool] = None
+    _auth_users_columns: Optional[Set[str]] = None
+
+    @classmethod
+    async def _check_auth_users_exists(cls, db: AsyncSession) -> bool:
+        bind = db.bind
+        if bind is not None and bind.dialect.name != "postgresql":
+            return False
+        if cls._has_auth_users is not None:
+            return cls._has_auth_users
+        try:
+            res = await db.execute(text("SELECT to_regclass('auth.users') IS NOT NULL"))
+            exists = bool(res.scalar())
+            cls._has_auth_users = exists
+            return exists
+        except Exception:
+            return False
+
+    @classmethod
+    async def _get_auth_users_columns(cls, db: AsyncSession) -> Set[str]:
+        if cls._auth_users_columns is not None:
+            return cls._auth_users_columns
+        try:
+            res = await db.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'auth' AND table_name = 'users'"
+            ))
+            cols = {row[0] for row in res.fetchall()}
+            cls._auth_users_columns = cols
+            return cols
+        except Exception:
+            return set()
+
+    @classmethod
+    async def _insert_auth_user(
+        cls,
+        db: AsyncSession,
+        user_id: str,
+        email: str,
+        hashed_pw: Optional[str],
+        full_name: str,
+        default_currency: str = "USD"
+    ) -> None:
+        avail_cols = await cls._get_auth_users_columns(db)
+        insert_cols = ["id", "email"]
+        insert_vals = ["CAST(:user_id AS uuid)", ":email"]
+        params: dict = {"user_id": user_id, "email": email}
+
+        if "encrypted_password" in avail_cols and hashed_pw:
+            insert_cols.append("encrypted_password")
+            insert_vals.append(":encrypted_password")
+            params["encrypted_password"] = hashed_pw
+
+        if "raw_user_meta_data" in avail_cols:
+            insert_cols.append("raw_user_meta_data")
+            insert_vals.append("CAST(:user_meta AS jsonb)")
+            params["user_meta"] = json.dumps({"full_name": full_name, "default_currency": default_currency})
+
+        if "raw_app_meta_data" in avail_cols:
+            insert_cols.append("raw_app_meta_data")
+            insert_vals.append("CAST(:app_meta AS jsonb)")
+            params["app_meta"] = json.dumps({"provider": "email", "providers": ["email"]})
+
+        if "aud" in avail_cols:
+            insert_cols.append("aud")
+            insert_vals.append("'authenticated'")
+
+        if "role" in avail_cols:
+            insert_cols.append("role")
+            insert_vals.append("'authenticated'")
+
+        if "email_confirmed_at" in avail_cols:
+            insert_cols.append("email_confirmed_at")
+            insert_vals.append("now()")
+
+        if "created_at" in avail_cols:
+            insert_cols.append("created_at")
+            insert_vals.append("now()")
+
+        if "updated_at" in avail_cols:
+            insert_cols.append("updated_at")
+            insert_vals.append("now()")
+
+        sql = f"INSERT INTO auth.users ({', '.join(insert_cols)}) VALUES ({', '.join(insert_vals)})"
+        await db.execute(text(sql), params)
+
+    @classmethod
+    async def register_user(cls, db: AsyncSession, data: UserCreate) -> User:
+        clean_email = data.email.lower().strip()
         # Check if email is already taken
-        stmt = select(User).where(User.email == data.email.lower().strip())
+        stmt = select(User).where(User.email == clean_email)
         result = await db.execute(stmt)
         existing_user = result.scalar_one_or_none()
         if existing_user:
@@ -28,6 +116,16 @@ class AuthService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An account with this email address already exists"
             )
+
+        has_auth = await cls._check_auth_users_exists(db)
+        if has_auth:
+            auth_stmt = text("SELECT 1 FROM auth.users WHERE lower(email) = :email")
+            auth_res = await db.execute(auth_stmt, {"email": clean_email})
+            if auth_res.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An account with this email address already exists"
+                )
 
         phone = data.phone_number.strip() if data.phone_number else None
         if phone:
@@ -39,29 +137,60 @@ class AuthService:
                     detail="An account with this phone number already exists"
                 )
 
+        user_id = str(uuid.uuid4())
         hashed_pw = SecurityUtils.hash_password(data.password)
-        new_user = User(
-            email=data.email.lower().strip(),
-            hashed_password=hashed_pw,
-            full_name=data.full_name.strip(),
-            phone_number=phone,
-            default_currency=data.default_currency.upper(),
-            is_active=True,
-            is_verified=False
-        )
-        db.add(new_user)
+
+        if has_auth:
+            await cls._insert_auth_user(
+                db=db,
+                user_id=user_id,
+                email=clean_email,
+                hashed_pw=hashed_pw,
+                full_name=data.full_name.strip(),
+                default_currency=data.default_currency.upper()
+            )
+
+        # In Supabase, on_auth_user_created trigger may have created public.profiles row
+        p_stmt = select(User).where(User.id == user_id)
+        p_res = await db.execute(p_stmt)
+        user = p_res.scalar_one_or_none()
+
+        if user:
+            user.hashed_password = hashed_pw
+            user.full_name = data.full_name.strip()
+            user.phone_number = phone
+            user.default_currency = data.default_currency.upper()
+            user.is_active = True
+            user.is_verified = False
+        else:
+            user = User(
+                id=user_id,
+                email=clean_email,
+                hashed_password=hashed_pw,
+                full_name=data.full_name.strip(),
+                phone_number=phone,
+                default_currency=data.default_currency.upper(),
+                is_active=True,
+                is_verified=False
+            )
+            db.add(user)
+
         await db.flush()
 
         # Seed initial Free subscription tier
-        free_sub = Subscription(
-            user_id=new_user.id,
-            tier="FREE",
-            status="ACTIVE"
-        )
-        db.add(free_sub)
+        sub_stmt = select(Subscription).where(Subscription.user_id == user.id)
+        sub_res = await db.execute(sub_stmt)
+        if not sub_res.scalar_one_or_none():
+            free_sub = Subscription(
+                user_id=user.id,
+                tier="FREE",
+                status="ACTIVE"
+            )
+            db.add(free_sub)
+
         await db.commit()
-        await db.refresh(new_user)
-        return new_user
+        await db.refresh(user)
+        return user
 
     @staticmethod
     async def authenticate_user(db: AsyncSession, login_data: UserLogin) -> Tuple[User, Token]:
@@ -221,8 +350,9 @@ class AuthService:
             pass
         return False
 
-    @staticmethod
+    @classmethod
     async def authenticate_oauth(
+        cls,
         db: AsyncSession,
         data: OAuthLoginRequest
     ) -> Tuple[User, Token]:
@@ -278,25 +408,56 @@ class AuthService:
         if not user:
             hashed_pw = SecurityUtils.hash_password(data.password) if data.password else None
             phone = data.phone_number.strip() if data.phone_number else None
-            user = User(
-                email=email,
-                hashed_password=hashed_pw,
-                full_name=full_name.strip(),
-                phone_number=phone,
-                avatar_url=avatar_url,
-                default_currency="USD",
-                is_active=True,
-                is_verified=True
-            )
-            db.add(user)
+            user_id = str(uuid.uuid4())
+            has_auth = await cls._check_auth_users_exists(db)
+            if has_auth:
+                await cls._insert_auth_user(
+                    db=db,
+                    user_id=user_id,
+                    email=email,
+                    hashed_pw=hashed_pw,
+                    full_name=full_name.strip(),
+                    default_currency="USD"
+                )
+
+            p_stmt = select(User).where(User.id == user_id)
+            p_res = await db.execute(p_stmt)
+            user = p_res.scalar_one_or_none()
+
+            if user:
+                user.hashed_password = hashed_pw
+                user.full_name = full_name.strip()
+                user.phone_number = phone
+                user.avatar_url = avatar_url
+                user.default_currency = "USD"
+                user.is_active = True
+                user.is_verified = True
+            else:
+                user = User(
+                    id=user_id,
+                    email=email,
+                    hashed_password=hashed_pw,
+                    full_name=full_name.strip(),
+                    phone_number=phone,
+                    avatar_url=avatar_url,
+                    default_currency="USD",
+                    is_active=True,
+                    is_verified=True
+                )
+                db.add(user)
+
             await db.flush()
 
-            free_sub = Subscription(
-                user_id=user.id,
-                tier="FREE",
-                status="ACTIVE"
-            )
-            db.add(free_sub)
+            sub_stmt = select(Subscription).where(Subscription.user_id == user.id)
+            sub_res = await db.execute(sub_stmt)
+            if not sub_res.scalar_one_or_none():
+                free_sub = Subscription(
+                    user_id=user.id,
+                    tier="FREE",
+                    status="ACTIVE"
+                )
+                db.add(free_sub)
+
             await db.commit()
             await db.refresh(user)
         else:

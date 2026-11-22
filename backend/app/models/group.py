@@ -7,20 +7,20 @@ import secrets
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import String, Boolean, DateTime, ForeignKey, UniqueConstraint, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.db.session import Base
+from app.db.session import Base, UID_TYPE
 
 
 class Group(Base):
     __tablename__ = "groups"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     group_type: Mapped[str] = mapped_column(String(32), default="OTHER", nullable=False)  # HOME, TRIP, COUPLE, OTHER
     base_currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
     simplify_debts: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     invite_code: Mapped[str] = mapped_column(String(16), unique=True, index=True, nullable=False)
     avatar_url: Mapped[str] = mapped_column(String(512), nullable=True)
-    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False)
+    created_by: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id"), nullable=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -50,9 +50,9 @@ class GroupMember(Base):
         UniqueConstraint("group_id", "user_id", name="uq_group_user"),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    group_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(32), default="MEMBER", nullable=False)  # OWNER, ADMIN, MEMBER
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     joined_at: Mapped[datetime] = mapped_column(
@@ -69,10 +69,10 @@ class GroupMember(Base):
 class GroupInvitation(Base):
     __tablename__ = "invitations"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    group_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
-    invited_by: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False)
+    invited_by: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id"), nullable=False)
     token: Mapped[str] = mapped_column(String(64), unique=True, index=True, default=lambda: secrets.token_urlsafe(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False)  # PENDING, ACCEPTED, EXPIRED, REVOKED
     created_at: Mapped[datetime] = mapped_column(
@@ -98,9 +98,9 @@ Invitation = GroupInvitation
 class GroupSplitTemplate(Base):
     __tablename__ = "group_split_templates"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
-    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False)
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    group_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_by: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     split_type: Mapped[str] = mapped_column(String(32), default="EQUAL", nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

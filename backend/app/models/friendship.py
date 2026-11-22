@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import String, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.db.session import Base
+from app.db.session import Base, UID_TYPE
 
 
 class Friendship(Base):
@@ -15,9 +15,9 @@ class Friendship(Base):
         UniqueConstraint("user_id", "friend_id", name="uq_friendship_pair"),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
-    friend_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
+    friend_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="ACCEPTED", nullable=False)  # PENDING, ACCEPTED, BLOCKED
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

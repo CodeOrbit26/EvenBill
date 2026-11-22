@@ -10,19 +10,19 @@ from decimal import Decimal
 from typing import Optional
 from sqlalchemy import String, Boolean, DateTime, Date, Numeric, Text, Integer, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.db.session import Base
+from app.db.session import Base, UID_TYPE
 
 
 class Expense(Base):
     __tablename__ = "expenses"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
     idempotency_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, index=True)
     transaction_type: Mapped[str] = mapped_column(String(32), default="EXPENSE", nullable=False)  # EXPENSE, REIMBURSEMENT, REFUND
-    original_expense_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="SET NULL"), nullable=True)
+    original_expense_id: Mapped[Optional[str]] = mapped_column(UID_TYPE, ForeignKey("expenses.id", ondelete="SET NULL"), nullable=True)
 
-    group_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
-    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False, index=True)
+    group_id: Mapped[Optional[str]] = mapped_column(UID_TYPE, ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
+    created_by: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id"), nullable=False, index=True)
     description: Mapped[str] = mapped_column(String(255), nullable=False)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
@@ -71,9 +71,9 @@ class ExpensePayer(Base):
         UniqueConstraint("expense_id", "user_id", name="uq_expense_payer"),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    expense_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id"), nullable=False, index=True)
     amount_paid: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
 
     # Relationships
@@ -87,9 +87,9 @@ class ExpenseSplit(Base):
         UniqueConstraint("expense_id", "user_id", name="uq_expense_split"),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    expense_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id"), nullable=False, index=True)
     owed_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     share_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4), nullable=True)
 
@@ -105,10 +105,10 @@ ExpenseAllocation = ExpenseSplit
 class ExpenseParticipant(Base):
     __tablename__ = "expense_participants"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=True, index=True)
-    pending_participant_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("pending_participants.id", ondelete="CASCADE"), nullable=True, index=True)
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    expense_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[Optional[str]] = mapped_column(UID_TYPE, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=True, index=True)
+    pending_participant_id: Mapped[Optional[str]] = mapped_column(UID_TYPE, ForeignKey("pending_participants.id", ondelete="CASCADE"), nullable=True, index=True)
     share_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     share_percentage: Mapped[Optional[Decimal]] = mapped_column(Numeric(7, 4), nullable=True)
 
@@ -119,9 +119,9 @@ class ExpenseParticipant(Base):
 class Receipt(Base):
     __tablename__ = "receipts"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    expense_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("expenses.id", ondelete="CASCADE"), nullable=True, index=True)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    expense_id: Mapped[Optional[str]] = mapped_column(UID_TYPE, ForeignKey("expenses.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
     s3_key: Mapped[str] = mapped_column(String(512), nullable=False)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)

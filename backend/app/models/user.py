@@ -9,14 +9,14 @@ from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import String, Boolean, DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.db.session import Base
+from app.db.session import Base, UID_TYPE
 
 
 class Profile(Base):
     __tablename__ = "profiles"
 
     # UUID matching auth.users.id from Supabase Auth
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     hashed_password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Optional for legacy/dev tests
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -54,8 +54,8 @@ User = Profile
 class Subscription(Base):
     __tablename__ = "subscriptions"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
     tier: Mapped[str] = mapped_column(String(32), default="FREE", nullable=False)  # FREE, PRO_MONTHLY, PRO_ANNUAL
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False)  # ACTIVE, CANCELED, PAST_DUE, IN_GRACE_PERIOD, REFUNDED, EXPIRED
     original_transaction_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, unique=True)
@@ -104,11 +104,11 @@ class Subscription(Base):
 class SubscriptionWebhookEvent(Base):
     __tablename__ = "subscription_webhook_events"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
     event_id: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
     store: Mapped[str] = mapped_column(String(32), nullable=False)  # REVENUECAT, APPLE, GOOGLE, STRIPE
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
+    user_id: Mapped[Optional[str]] = mapped_column(UID_TYPE, ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
     payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     processed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -123,9 +123,9 @@ class SubscriptionWebhookEvent(Base):
 class RevokedToken(Base):
     __tablename__ = "revoked_tokens"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
     jti: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True)
     revoked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError, DBAPIError
 
 from app.core.config import settings
 from app.core.security_headers import SecurityHeadersMiddleware
-from app.core.logging import CorrelationIdMiddleware
+from app.core.logging import CorrelationIdMiddleware, logger, redact_sensitive_data
 from app.db.session import engine, Base
 import app.models  # Ensure all ORM models are registered with Base.metadata
 from app.api.v1.router import api_router
@@ -73,6 +73,14 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Conflict and Database Concurrency Error Handlers (HTTP 409)
 @app.exception_handler(IntegrityError)
 async def integrity_exception_handler(request: Request, exc: IntegrityError):
+    correlation_id = getattr(request.state, "correlation_id", "none")
+    err_orig = exc.orig if hasattr(exc, "orig") else exc
+    err_type = type(err_orig).__name__
+    err_msg = redact_sensitive_data(str(err_orig))
+    logger.warning(
+        f"Database integrity conflict ({err_type}) on {request.method} {request.url.path}: {err_msg}",
+        extra={"correlation_id": correlation_id}
+    )
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={
@@ -85,8 +93,15 @@ async def integrity_exception_handler(request: Request, exc: IntegrityError):
 
 @app.exception_handler(DBAPIError)
 async def dbapi_exception_handler(request: Request, exc: DBAPIError):
-    err_str = str(exc.orig) if hasattr(exc, "orig") else str(exc)
+    correlation_id = getattr(request.state, "correlation_id", "none")
+    err_orig = exc.orig if hasattr(exc, "orig") else exc
+    err_type = type(err_orig).__name__
+    err_str = str(err_orig)
     if "Concurrent join failed" in err_str or "already been claimed" in err_str or "violates unique constraint" in err_str or "last active OWNER" in err_str:
+        logger.warning(
+            f"Database conflict ({err_type}) on {request.method} {request.url.path}: {redact_sensitive_data(err_str)}",
+            extra={"correlation_id": correlation_id}
+        )
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={
@@ -96,6 +111,10 @@ async def dbapi_exception_handler(request: Request, exc: DBAPIError):
                 "meta": {"version": settings.VERSION}
             }
         )
+    logger.error(
+        f"Database DBAPI error ({err_type}) on {request.method} {request.url.path}: {redact_sensitive_data(err_str)}",
+        extra={"correlation_id": correlation_id}
+    )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={

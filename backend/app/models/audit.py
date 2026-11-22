@@ -8,17 +8,17 @@ from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import String, DateTime, Text, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.db.session import Base
+from app.db.session import Base, UID_TYPE
 
 
 class FinancialAuditLog(Base):
     __tablename__ = "financial_audit_logs"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(UID_TYPE, primary_key=True, default=lambda: str(uuid.uuid4()))
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)  # EXPENSE, SETTLEMENT, SPLIT
-    entity_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(UID_TYPE, nullable=False, index=True)
     action: Mapped[str] = mapped_column(String(32), nullable=False)  # CREATE, UPDATE, DELETE
-    performed_by: Mapped[str] = mapped_column(String(36), ForeignKey("profiles.id"), nullable=False)
+    performed_by: Mapped[str] = mapped_column(UID_TYPE, ForeignKey("profiles.id"), nullable=False)
     previous_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     new_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
