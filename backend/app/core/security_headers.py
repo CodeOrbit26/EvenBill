@@ -44,16 +44,39 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
         
         # CSP prevents XSS and malicious framing
-        headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: https://storage.evenbill.app; "
-            "font-src 'self' data:; "
-            "frame-ancestors 'none'; "
-            "object-src 'none'; "
-            "base-uri 'self';"
-        )
+        # Swagger UI and ReDoc require CDN assets and inline initialization scripts
+        path = request.url.path.rstrip('/')
+        docs_paths = {
+            f"{settings.API_V1_STR}/docs",
+            f"{settings.API_V1_STR}/redoc",
+            f"{settings.API_V1_STR}/openapi.json",
+            "/docs",
+            "/redoc",
+            "/openapi.json",
+        }
+        if path in docs_paths or path.endswith(("/docs", "/redoc", "/openapi.json")):
+            headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+                "img-src 'self' data: https://fastapi.tiangolo.com https://cdn.jsdelivr.net https://storage.evenbill.app; "
+                "font-src 'self' data: https://fonts.gstatic.com; "
+                "connect-src 'self' https://cdn.jsdelivr.net; "
+                "frame-ancestors 'none'; "
+                "object-src 'none'; "
+                "base-uri 'self';"
+            )
+        else:
+            headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: https://storage.evenbill.app; "
+                "font-src 'self' data:; "
+                "frame-ancestors 'none'; "
+                "object-src 'none'; "
+                "base-uri 'self';"
+            )
 
         # Enforce HSTS in production or staging environments
         if settings.ENVIRONMENT in ("production", "staging"):

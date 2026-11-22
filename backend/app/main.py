@@ -5,7 +5,7 @@ EvenBill Backend Application Entrypoint
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import IntegrityError, DBAPIError
 
@@ -36,6 +36,7 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url=f"{settings.API_V1_STR}/docs",
     redoc_url=f"{settings.API_V1_STR}/redoc",
+    swagger_ui_parameters={"persistAuthorization": True},
     lifespan=lifespan
 )
 
@@ -120,3 +121,15 @@ async def root():
         "docs": f"{settings.API_V1_STR}/docs",
         "status": "operational"
     }
+
+
+@app.get("/docs", include_in_schema=False)
+async def docs_redirect():
+    """Redirect top-level /docs to API v1 documentation."""
+    return RedirectResponse(url=f"{settings.API_V1_STR}/docs", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_redirect():
+    """Redirect top-level /openapi.json to API v1 OpenAPI schema."""
+    return RedirectResponse(url=f"{settings.API_V1_STR}/openapi.json", status_code=status.HTTP_307_TEMPORARY_REDIRECT)

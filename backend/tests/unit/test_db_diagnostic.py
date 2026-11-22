@@ -53,3 +53,4 @@ def test_diagnose_sqlite_url(capsys):
     assert result["success"] is True
     captured = capsys.readouterr().out
     assert "DNS Resolution:     SKIPPED (Local file / SQLite database)" in captured
+

@@ -105,3 +105,4 @@ def diagnose_database_url(url_string: str) -> Dict[str, Any]:
         "has_password": has_password,
         "resolved_ips": resolved_ips,
     }
+
