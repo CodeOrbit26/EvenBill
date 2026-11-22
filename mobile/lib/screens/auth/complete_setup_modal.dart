@@ -113,6 +113,7 @@ class _CompleteSetupSheetState extends ConsumerState<_CompleteSetupSheet> {
   }
 
   void _handleSkip() {
+    ref.read(authProvider.notifier).skipSetup();
     Navigator.of(context).pop();
     widget.onComplete();
   }

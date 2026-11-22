@@ -42,7 +42,7 @@ class GoogleAuthService {
         scopeHint: const ['email', 'profile'],
       );
 
-      final GoogleSignInAuthentication auth = await account.authentication;
+      final GoogleSignInAuthentication auth = account.authentication;
 
       return GoogleAuthResult(
         email: account.email,
@@ -51,6 +51,16 @@ class GoogleAuthService {
         idToken: auth.idToken,
       );
     } catch (e) {
+      final str = e.toString().toLowerCase();
+      // Handle user cancellation or bottom sheet dismissal cleanly without errors
+      if (str.contains('canceled') ||
+          str.contains('cancelled') ||
+          str.contains('16:') ||
+          str.contains('cancel') ||
+          str.contains('activity was cancelled')) {
+        debugPrint('Google Sign-In notice: flow cancelled or dismissed by user.');
+        return null;
+      }
       debugPrint('Google Sign In Notice: $e');
       rethrow;
     }

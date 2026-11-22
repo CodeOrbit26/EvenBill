@@ -13,7 +13,6 @@ import '../../core/models/user_model.dart';
 import '../../core/di/injection.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/google_auth_service.dart';
-import 'complete_setup_modal.dart';
 
 class SignInScreen extends ConsumerStatefulWidget {
   final VoidCallback onSignInSuccess;
@@ -39,6 +38,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
   bool _isLoading = false;
   bool _isSocialLoading = false;
   bool _obscurePassword = true;
+  bool _rememberEmail = false;
 
   @override
   void initState() {
@@ -48,11 +48,15 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
 
   Future<void> _loadRememberedEmail() async {
     try {
-      final lastEmail = await Injection.tokenStorage.getLastEmail();
-      if (lastEmail != null && lastEmail.isNotEmpty && mounted) {
-        setState(() {
-          _emailController.text = lastEmail;
-        });
+      final isRemembered = await Injection.tokenStorage.isRememberEmailEnabled();
+      if (isRemembered) {
+        final lastEmail = await Injection.tokenStorage.getLastEmail();
+        if (lastEmail != null && lastEmail.isNotEmpty && mounted) {
+          setState(() {
+            _rememberEmail = true;
+            _emailController.text = lastEmail;
+          });
+        }
       }
     } catch (_) {}
   }
@@ -93,6 +97,13 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
       }
       if (mounted) {
         setState(() => _isLoading = false);
+        if (_rememberEmail) {
+          await Injection.tokenStorage.setRememberEmailEnabled(true);
+          await Injection.tokenStorage.saveLastEmail(loginIdentifier);
+        } else {
+          await Injection.tokenStorage.setRememberEmailEnabled(false);
+          await Injection.tokenStorage.clearLastEmail();
+        }
         AppSnackbar.showSuccess(context, 'Welcome back, ${user.fullName}!');
         widget.onSignInSuccess();
       }
@@ -119,52 +130,30 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
   Future<void> _handleGoogleSignIn() async {
     setState(() => _isSocialLoading = true);
     try {
-      GoogleAuthResult? googleResult;
-      try {
-        googleResult = await GoogleAuthService.signIn();
-      } catch (e) {
-        debugPrint('Native Google Sign-In notice: $e');
-      }
-
-      String email;
-      String fullName;
-      String? avatarUrl;
-      String? idToken;
-
-      if (googleResult != null) {
-        email = googleResult.email;
-        fullName = googleResult.fullName;
-        avatarUrl = googleResult.avatarUrl;
-        idToken = googleResult.idToken;
-      } else {
-        if (!mounted) return;
-        final selection = await showGoogleAccountPicker(context);
-        if (selection == null) {
-          if (mounted) setState(() => _isSocialLoading = false);
-          return;
-        }
-        email = selection.email;
-        fullName = selection.name;
-        avatarUrl = selection.avatarUrl;
+      final googleResult = await GoogleAuthService.signIn();
+      if (googleResult == null) {
+        // User dismissed or cancelled the Google prompt
+        if (mounted) setState(() => _isSocialLoading = false);
+        return;
       }
 
       UserModel user;
       try {
         user = await ref.read(authProvider.notifier).loginWithOAuth(
               provider: 'google',
-              idToken: idToken,
-              email: email,
-              fullName: fullName,
-              avatarUrl: avatarUrl,
+              idToken: googleResult.idToken,
+              email: googleResult.email,
+              fullName: googleResult.fullName,
+              avatarUrl: googleResult.avatarUrl,
             );
       } catch (e) {
         if (e.toString().contains('ProviderScope')) {
           user = await Injection.authRepository.loginWithOAuth(
             provider: 'google',
-            idToken: idToken,
-            email: email,
-            fullName: fullName,
-            avatarUrl: avatarUrl,
+            idToken: googleResult.idToken,
+            email: googleResult.email,
+            fullName: googleResult.fullName,
+            avatarUrl: googleResult.avatarUrl,
           );
         } else {
           rethrow;
@@ -172,19 +161,8 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
       }
       if (mounted) {
         setState(() => _isSocialLoading = false);
-        if (!user.hasPassword) {
-          await showCompleteSetupModal(
-            context,
-            user: user,
-            onComplete: () {
-              AppSnackbar.showSuccess(context, 'Welcome, ${user.fullName}!');
-              widget.onSignInSuccess();
-            },
-          );
-        } else {
-          AppSnackbar.showSuccess(context, 'Welcome, ${user.fullName}!');
-          widget.onSignInSuccess();
-        }
+        AppSnackbar.showSuccess(context, 'Welcome, ${user.fullName}!');
+        widget.onSignInSuccess();
       }
     } catch (e) {
       if (mounted) {
@@ -312,26 +290,66 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                   onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                 ),
               ),
-              const SizedBox(height: AppSpacing.xs),
+              const SizedBox(height: AppSpacing.sm),
 
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () {
-                    AppSnackbar.showInfo(
-                      context,
-                      'Password recovery instructions sent to your email if account exists.',
-                    );
-                  },
-                  child: Text(
-                    'Forgot Password?',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? AppColors.mintAccent : AppColors.forestGreen,
+              // Remember Email & Forgot Password Row
+              Row(
+                children: [
+                  SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: Checkbox(
+                      value: _rememberEmail,
+                      activeColor: AppColors.forestGreen,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      onChanged: (val) {
+                        setState(() {
+                          _rememberEmail = val ?? false;
+                        });
+                      },
                     ),
                   ),
-                ),
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _rememberEmail = !_rememberEmail;
+                      });
+                    },
+                    child: Text(
+                      'Remember email on this device',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onPressed: () {
+                      AppSnackbar.showInfo(
+                        context,
+                        'Password recovery instructions sent to your email if account exists.',
+                      );
+                    },
+                    child: Text(
+                      'Forgot Password?',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? AppColors.mintAccent : AppColors.forestGreen,
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: AppSpacing.md),
 

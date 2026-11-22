@@ -26,7 +26,7 @@ import 'package:evenbill/core/models/bank_model.dart';
 class MockAuthRepository extends AuthRepository {
   UserModel currentUser = const UserModel(
     id: 'user_1',
-    email: 'abhay@evenbill.app',
+    email: 'test.user@evenbill.app',
     fullName: 'Abhay Gupta',
     defaultCurrency: 'USD',
     isPro: false,

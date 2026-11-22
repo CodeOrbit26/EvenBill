@@ -14,7 +14,6 @@ import '../../core/models/user_model.dart';
 import '../../core/di/injection.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/google_auth_service.dart';
-import 'complete_setup_modal.dart';
 
 class RegistrationScreen extends ConsumerStatefulWidget {
   final VoidCallback onRegisterSuccess;
@@ -131,33 +130,11 @@ class _RegistrationScreenState extends ConsumerState<RegistrationScreen> {
   Future<void> _handleGoogleSignUp() async {
     setState(() => _isSocialLoading = true);
     try {
-      GoogleAuthResult? googleResult;
-      try {
-        googleResult = await GoogleAuthService.signIn();
-      } catch (e) {
-        debugPrint('Native Google Sign-Up notice: $e');
-      }
-
-      String email;
-      String fullName;
-      String? avatarUrl;
-      String? idToken;
-
-      if (googleResult != null) {
-        email = googleResult.email;
-        fullName = googleResult.fullName;
-        avatarUrl = googleResult.avatarUrl;
-        idToken = googleResult.idToken;
-      } else {
-        if (!mounted) return;
-        final selection = await showGoogleAccountPicker(context);
-        if (selection == null) {
-          if (mounted) setState(() => _isSocialLoading = false);
-          return;
-        }
-        email = selection.email;
-        fullName = selection.name;
-        avatarUrl = selection.avatarUrl;
+      final googleResult = await GoogleAuthService.signIn();
+      if (googleResult == null) {
+        // User dismissed or cancelled the Google prompt
+        if (mounted) setState(() => _isSocialLoading = false);
+        return;
       }
 
       UserModel user;
@@ -166,19 +143,19 @@ class _RegistrationScreenState extends ConsumerState<RegistrationScreen> {
             .read(authProvider.notifier)
             .loginWithOAuth(
               provider: 'google',
-              idToken: idToken,
-              email: email,
-              fullName: fullName,
-              avatarUrl: avatarUrl,
+              idToken: googleResult.idToken,
+              email: googleResult.email,
+              fullName: googleResult.fullName,
+              avatarUrl: googleResult.avatarUrl,
             );
       } catch (e) {
         if (e.toString().contains('ProviderScope')) {
           user = await Injection.authRepository.loginWithOAuth(
             provider: 'google',
-            idToken: idToken,
-            email: email,
-            fullName: fullName,
-            avatarUrl: avatarUrl,
+            idToken: googleResult.idToken,
+            email: googleResult.email,
+            fullName: googleResult.fullName,
+            avatarUrl: googleResult.avatarUrl,
           );
         } else {
           rethrow;
@@ -186,25 +163,11 @@ class _RegistrationScreenState extends ConsumerState<RegistrationScreen> {
       }
       if (mounted) {
         setState(() => _isSocialLoading = false);
-        if (!user.hasPassword) {
-          await showCompleteSetupModal(
-            context,
-            user: user,
-            onComplete: () {
-              AppSnackbar.showSuccess(
-                context,
-                'Welcome to EvenBill, ${user.fullName}!',
-              );
-              widget.onRegisterSuccess();
-            },
-          );
-        } else {
-          AppSnackbar.showSuccess(
-            context,
-            'Welcome to EvenBill, ${user.fullName}!',
-          );
-          widget.onRegisterSuccess();
-        }
+        AppSnackbar.showSuccess(
+          context,
+          'Welcome to EvenBill, ${user.fullName}!',
+        );
+        widget.onRegisterSuccess();
       }
     } catch (e) {
       if (mounted) {

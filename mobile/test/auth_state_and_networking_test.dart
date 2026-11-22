@@ -438,16 +438,16 @@ void main() {
         final mockAuth = MockAuthRepository(tokenStorage: testTokenStorage);
         Injection.setMockRepositories(tokens: testTokenStorage, auth: mockAuth);
 
-        await testTokenStorage.saveLastEmail('abhay.gupta@gmail.com');
+        await testTokenStorage.saveLastEmail('test.user@example.com');
         final remembered = await testTokenStorage.getLastEmail();
-        expect(remembered, 'abhay.gupta@gmail.com');
+        expect(remembered, 'test.user@example.com');
 
         final notifier = container.read(authProvider.notifier);
-        final user = await notifier.login(email: 'abhay.gupta@gmail.com', password: 'Password123!');
+        final user = await notifier.login(email: 'test.user@example.com', password: 'Password123!');
 
         final state = container.read(authProvider);
         expect(state.status, AuthStatus.authenticated);
-        expect(state.user?.email, 'abhay.gupta@gmail.com');
+        expect(state.user?.email, 'test.user@example.com');
         expect(user.fullName, 'Abhay Gupta');
       } finally {
         container.dispose();
