@@ -5,7 +5,7 @@ Uses Pydantic v2 BaseSettings to parse environment variables with type validatio
 
 from typing import List, Optional
 from decimal import Decimal
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -103,6 +103,53 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore"
     )
+
+    @model_validator(mode="after")
+    def validate_production_configuration(self) -> "Settings":
+        env = self.ENVIRONMENT.lower()
+        if env in ("production", "staging"):
+            # 1. DATABASE_URL must not silently fall back to SQLite in production/staging
+            if not self.DATABASE_URL or "sqlite" in self.DATABASE_URL.lower():
+                raise ValueError(
+                    f"Production/staging environment requires a PostgreSQL connection string. "
+                    f"Silent fallback to SQLite ({self.DATABASE_URL}) is strictly forbidden."
+                )
+
+            # Auto-normalize standard postgres:// or postgresql:// to postgresql+asyncpg:// for async SQLAlchemy
+            if self.DATABASE_URL.startswith("postgres://"):
+                self.DATABASE_URL = self.DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif self.DATABASE_URL.startswith("postgresql://") and not self.DATABASE_URL.startswith("postgresql+"):
+                self.DATABASE_URL = self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+            # 2. CORS must never contain wildcard '*' in production/staging
+            if "*" in self.CORS_ORIGINS:
+                raise ValueError(
+                    "CORS_ORIGINS cannot contain wildcard '*' in production/staging. "
+                    "Explicit allowed origins must be configured to protect user session credentials."
+                )
+
+            # 3. Insecure default SECRET_KEY is forbidden in production/staging
+            if "insecure-dev-secret-key" in self.SECRET_KEY:
+                raise ValueError(
+                    "Default insecure SECRET_KEY detected in production/staging. "
+                    "A strong cryptographic secret key must be set via the SECRET_KEY environment variable."
+                )
+
+            # 4. Storage provider validation: MinIO on localhost cannot be used in production
+            if self.STORAGE_PROVIDER == "MINIO" and self.S3_ENDPOINT and ("localhost" in self.S3_ENDPOINT or "127.0.0.1" in self.S3_ENDPOINT):
+                raise ValueError(
+                    "Development storage provider 'MINIO' on localhost cannot be used in production/staging. "
+                    "Configure S3 storage (STORAGE_PROVIDER='S3' with bucket credentials) or STORAGE_PROVIDER='LOCAL'."
+                )
+
+            # 5. Email provider validation: Mailpit on localhost cannot be used in production
+            if self.EMAIL_PROVIDER == "MAILPIT" and (self.SMTP_HOST in ("localhost", "127.0.0.1")):
+                raise ValueError(
+                    "Development email provider 'MAILPIT' on localhost cannot be used in production/staging. "
+                    "Configure EMAIL_PROVIDER='SES', 'SMTP' (with external host), or 'MOCK'."
+                )
+
+        return self
 
 
 settings = Settings()
