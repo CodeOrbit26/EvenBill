@@ -3,9 +3,11 @@ EvenBill Authentication and Identity Service
 """
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, Set
 import uuid
+import httpx
 import jwt
 from sqlalchemy import select, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +17,8 @@ from app.core.security import SecurityUtils
 from app.models.user import User, Subscription, RevokedToken
 from app.models.group import Group, GroupMember
 from app.schemas.user import UserCreate, UserLogin, Token, OAuthLoginRequest
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -50,6 +54,52 @@ class AuthService:
             return cols
         except Exception:
             return set()
+
+    @classmethod
+    async def _create_supabase_admin_user(
+        cls,
+        user_id: str,
+        email: str,
+        password: Optional[str],
+        full_name: str,
+        default_currency: str = "USD"
+    ) -> bool:
+        """
+        Creates user identity via official Supabase Auth GoTrue Admin API when
+        SUPABASE_SERVICE_ROLE_KEY is configured. This adheres to clean service boundaries
+        and avoids raw SQL writes directly into auth.users.
+        """
+        if not settings.SUPABASE_SERVICE_ROLE_KEY:
+            return False
+
+        url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/admin/users"
+        headers = {
+            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+            "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+            "Content-Type": "application/json"
+        }
+        body = {
+            "id": user_id,
+            "email": email,
+            "email_confirm": True,
+            "user_metadata": {
+                "full_name": full_name,
+                "default_currency": default_currency
+            }
+        }
+        if password:
+            body["password"] = password
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(url, headers=headers, json=body)
+                if res.status_code in (200, 201):
+                    logger.info(f"Supabase GoTrue user {email} created successfully via Admin API")
+                    return True
+                logger.warning(f"Supabase Admin API returned {res.status_code}: {res.text}")
+        except Exception as e:
+            logger.warning(f"Supabase Admin API call notice: {e}")
+        return False
 
     @classmethod
     async def _insert_auth_user(
@@ -141,14 +191,22 @@ class AuthService:
         hashed_pw = SecurityUtils.hash_password(data.password)
 
         if has_auth:
-            await cls._insert_auth_user(
-                db=db,
+            created_via_api = await cls._create_supabase_admin_user(
                 user_id=user_id,
                 email=clean_email,
-                hashed_pw=hashed_pw,
+                password=data.password,
                 full_name=data.full_name.strip(),
                 default_currency=data.default_currency.upper()
             )
+            if not created_via_api:
+                await cls._insert_auth_user(
+                    db=db,
+                    user_id=user_id,
+                    email=clean_email,
+                    hashed_pw=hashed_pw,
+                    full_name=data.full_name.strip(),
+                    default_currency=data.default_currency.upper()
+                )
 
         # In Supabase, on_auth_user_created trigger may have created public.profiles row
         p_stmt = select(User).where(User.id == user_id)
@@ -411,14 +469,22 @@ class AuthService:
             user_id = str(uuid.uuid4())
             has_auth = await cls._check_auth_users_exists(db)
             if has_auth:
-                await cls._insert_auth_user(
-                    db=db,
+                created_via_api = await cls._create_supabase_admin_user(
                     user_id=user_id,
                     email=email,
-                    hashed_pw=hashed_pw,
+                    password=data.password,
                     full_name=full_name.strip(),
                     default_currency="USD"
                 )
+                if not created_via_api:
+                    await cls._insert_auth_user(
+                        db=db,
+                        user_id=user_id,
+                        email=email,
+                        hashed_pw=hashed_pw,
+                        full_name=full_name.strip(),
+                        default_currency="USD"
+                    )
 
             p_stmt = select(User).where(User.id == user_id)
             p_res = await db.execute(p_stmt)

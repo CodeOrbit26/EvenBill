@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../network/api_client.dart';
 import '../network/token_storage.dart';
@@ -155,6 +156,42 @@ class AuthRepository {
     String? phoneNumber,
     String? password,
   }) async {
+    final client = SupabaseService.client;
+    if (client != null && provider.toLowerCase() == 'google' && idToken != null && idToken.isNotEmpty) {
+      try {
+        final res = await client.auth.signInWithIdToken(
+          provider: OAuthProvider.google,
+          idToken: idToken,
+        );
+        final session = res.session;
+        if (session != null) {
+          await tokenStorage.saveTokens(
+            accessToken: session.accessToken,
+            refreshToken: session.refreshToken ?? '',
+          );
+          try {
+            return await getMe();
+          } catch (_) {
+            final user = UserModel(
+              id: res.user?.id ?? '',
+              email: email?.trim().toLowerCase() ?? res.user?.email ?? '',
+              fullName: fullName?.trim() ?? (res.user?.userMetadata?['full_name'] as String?) ?? 'User',
+              avatarUrl: avatarUrl ?? (res.user?.userMetadata?['avatar_url'] as String?),
+              phoneNumber: phoneNumber,
+              defaultCurrency: 'USD',
+              isActive: true,
+              isVerified: true,
+              createdAt: DateTime.now(),
+            );
+            await tokenStorage.saveUser(user);
+            return user;
+          }
+        }
+      } catch (e) {
+        debugPrint('[AuthRepository] Supabase signInWithIdToken fallback notice: $e');
+      }
+    }
+
     final payload = <String, dynamic>{
       'provider': provider.toLowerCase().trim(),
     };
@@ -181,6 +218,13 @@ class AuthRepository {
     final user = await getMe();
     await tokenStorage.saveUser(user);
     return user;
+  }
+
+  Future<void> resetPasswordForEmail(String email) async {
+    final client = SupabaseService.client;
+    if (client != null) {
+      await client.auth.resetPasswordForEmail(email.trim());
+    }
   }
 
   Future<UserModel> setPassword({

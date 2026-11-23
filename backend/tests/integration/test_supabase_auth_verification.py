@@ -264,3 +264,119 @@ async def test_reject_deactivated_user(
     assert res.status_code == 403
     assert "deactivated" in res.json().get("detail", "").lower()
 
+
+@pytest.mark.asyncio
+async def test_reject_refresh_token_as_access_token(client: AsyncClient):
+    """Custom or Supabase refresh tokens cannot be used as Bearer access tokens."""
+    refresh_payload = {
+        "sub": str(uuid.uuid4()),
+        "type": "refresh",
+        "exp": int(time.time()) + 86400,
+        "aud": settings.SUPABASE_AUDIENCE,
+        "iss": settings.supabase_issuer,
+        "email": "user@evenbill.app"
+    }
+    refresh_token = jwt.encode(refresh_payload, settings.SECRET_KEY, algorithm="HS256")
+
+    res = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {refresh_token}"}
+    )
+    assert res.status_code == 401
+    assert "refresh token cannot be used" in res.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_reject_email_collision_identity_takeover(
+    client: AsyncClient,
+    db_session: AsyncSession
+):
+    """
+    Security Invariant: Never link an existing financial account solely by email.
+    If a token presents a different UUID for an email that already belongs to another user,
+    the request MUST be rejected with HTTP 409 Conflict.
+    """
+    original_uuid = str(uuid.uuid4())
+    existing_user = User(
+        id=original_uuid,
+        email="victim@evenbill.app",
+        full_name="Original Victim Account",
+        default_currency="USD",
+        is_active=True
+    )
+    db_session.add(existing_user)
+    await db_session.commit()
+
+    # Attacker obtains a token with a different sub but same email
+    attacker_sub = str(uuid.uuid4())
+    attacker_payload = {
+        "sub": attacker_sub,
+        "email": "victim@evenbill.app",
+        "aud": settings.SUPABASE_AUDIENCE,
+        "iss": settings.supabase_issuer,
+        "exp": int(time.time()) + 3600
+    }
+    attacker_token = jwt.encode(attacker_payload, settings.SECRET_KEY, algorithm="HS256")
+
+    res = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {attacker_token}"}
+    )
+    assert res.status_code == 409
+    assert "already exists" in res.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_auto_provision_profile_checks_verified_claim(
+    client: AsyncClient,
+    db_session: AsyncSession
+):
+    """
+    When auto-provisioning a new profile from a valid token:
+    - If email_confirmed_at / email_verified is absent, is_verified is False.
+    - If provider is google / email_confirmed_at is present, is_verified is True.
+    """
+    # 1. Unconfirmed token
+    unconfirmed_sub = str(uuid.uuid4())
+    unconfirmed_payload = {
+        "sub": unconfirmed_sub,
+        "email": "unconfirmed@evenbill.app",
+        "aud": settings.SUPABASE_AUDIENCE,
+        "iss": settings.supabase_issuer,
+        "exp": int(time.time()) + 3600,
+        "user_metadata": {"full_name": "Unconfirmed User"}
+    }
+    unconfirmed_token = jwt.encode(unconfirmed_payload, settings.SECRET_KEY, algorithm="HS256")
+
+    res1 = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {unconfirmed_token}"}
+    )
+    assert res1.status_code == 200
+    user_data1 = res1.json()["data"]
+    assert user_data1["email"] == "unconfirmed@evenbill.app"
+    assert user_data1["is_verified"] is False
+
+    # 2. Confirmed token via Google provider
+    confirmed_sub = str(uuid.uuid4())
+    confirmed_payload = {
+        "sub": confirmed_sub,
+        "email": "confirmed@evenbill.app",
+        "aud": settings.SUPABASE_AUDIENCE,
+        "iss": settings.supabase_issuer,
+        "exp": int(time.time()) + 3600,
+        "app_metadata": {"provider": "google"},
+        "user_metadata": {"full_name": "Google User", "email_verified": True}
+    }
+    confirmed_token = jwt.encode(confirmed_payload, settings.SECRET_KEY, algorithm="HS256")
+
+    res2 = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {confirmed_token}"}
+    )
+    assert res2.status_code == 200
+    user_data2 = res2.json()["data"]
+    assert user_data2["email"] == "confirmed@evenbill.app"
+    assert user_data2["is_verified"] is True
+
+

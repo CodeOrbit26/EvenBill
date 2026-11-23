@@ -52,8 +52,14 @@ flutter_*.png
 !.env.production.example
 *.local
 
+# Database Backups & Dumps
+backups/
+*.dump
+*.sha256
+
 # IDEs & OS
 .idea/
 .vscode/
 *.apk
 *.aab
+**/xcshareddata/swiftpm/

@@ -334,11 +334,19 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                       minimumSize: Size.zero,
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
-                    onPressed: () {
-                      AppSnackbar.showInfo(
-                        context,
-                        'Password recovery instructions sent to your email if account exists.',
-                      );
+                    onPressed: () async {
+                      final email = _emailController.text.trim();
+                      if (email.isNotEmpty) {
+                        try {
+                          await Injection.authRepository.resetPasswordForEmail(email);
+                        } catch (_) {}
+                      }
+                      if (mounted) {
+                        AppSnackbar.showInfo(
+                          context,
+                          'Password recovery instructions sent to your email if account exists.',
+                        );
+                      }
                     },
                     child: Text(
                       'Forgot Password?',

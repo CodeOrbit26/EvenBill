@@ -90,6 +90,9 @@ class MockAuthRepository extends AuthRepository {
   }
 
   @override
+  Future<void> resetPasswordForEmail(String email) async {}
+
+  @override
   Future<UserModel> setPassword({
     required String password,
     String? phoneNumber,
