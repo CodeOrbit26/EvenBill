@@ -13,6 +13,7 @@ import '../../core/network/api_client.dart';
 import '../../core/models/user_model.dart';
 import '../../core/di/injection.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/repositories/auth_repository.dart';
 import '../../core/services/google_auth_service.dart';
 
 class RegistrationScreen extends ConsumerStatefulWidget {
@@ -65,10 +66,10 @@ class _RegistrationScreenState extends ConsumerState<RegistrationScreen> {
     final phone = _phoneController.text.trim();
     final password = _passwordController.text;
 
-    if (name.isEmpty || email.isEmpty || password.length < 8) {
+    if (name.isEmpty || !email.contains('@') || password.length < 8) {
       AppSnackbar.showError(
         context,
-        'Please complete required fields (Password min 8 chars)',
+        'Please enter your name, a valid email address, and password (min 8 chars)',
       );
       return;
     }
@@ -87,6 +88,9 @@ class _RegistrationScreenState extends ConsumerState<RegistrationScreen> {
               defaultCurrency: _selectedCurrency,
             );
       } catch (e) {
+        if (e is EmailConfirmationRequiredException) {
+          rethrow;
+        }
         if (e.toString().contains('ProviderScope')) {
           user = await Injection.authRepository.register(
             email: email,
@@ -106,6 +110,15 @@ class _RegistrationScreenState extends ConsumerState<RegistrationScreen> {
           'Account created! Welcome, ${user.fullName}!',
         );
         widget.onRegisterSuccess();
+      }
+    } on EmailConfirmationRequiredException catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        AppSnackbar.showInfo(
+          context,
+          e.message,
+        );
+        widget.onNavigateToLogin();
       }
     } catch (e) {
       if (mounted) {

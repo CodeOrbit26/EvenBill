@@ -32,12 +32,19 @@ class MockAuthRepository extends AuthRepository {
     isPro: false,
   );
   bool authenticated = false;
+  bool requireEmailConfirmation = false;
+  bool throwEmailNotConfirmedOnLogin = false;
+  String? lastPasswordResetEmail;
+  bool failPasswordReset = false;
 
   MockAuthRepository({TokenStorage? tokenStorage})
       : super(apiClient: ApiClient(), tokenStorage: tokenStorage ?? InMemoryTokenStorage());
 
   @override
   Future<UserModel> login({required String email, required String password}) async {
+    if (throwEmailNotConfirmedOnLogin) {
+      throw ApiException('Email not confirmed', statusCode: 401, isAuthError: true);
+    }
     authenticated = true;
     currentUser = UserModel(
       id: 'user_1',
@@ -56,6 +63,9 @@ class MockAuthRepository extends AuthRepository {
     String? phoneNumber,
     String defaultCurrency = 'USD',
   }) async {
+    if (requireEmailConfirmation) {
+      throw const EmailConfirmationRequiredException();
+    }
     authenticated = true;
     currentUser = UserModel(
       id: 'user_1',
@@ -90,7 +100,12 @@ class MockAuthRepository extends AuthRepository {
   }
 
   @override
-  Future<void> resetPasswordForEmail(String email) async {}
+  Future<void> resetPasswordForEmail(String email) async {
+    if (failPasswordReset) {
+      throw ApiException('Unable to send reset email right now.', statusCode: 500);
+    }
+    lastPasswordResetEmail = email.trim().toLowerCase();
+  }
 
   @override
   Future<UserModel> setPassword({
@@ -101,6 +116,7 @@ class MockAuthRepository extends AuthRepository {
     currentUser = currentUser.copyWith(
       fullName: fullName ?? currentUser.fullName,
       phoneNumber: phoneNumber ?? currentUser.phoneNumber,
+      hasPassword: true,
     );
     return currentUser;
   }

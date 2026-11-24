@@ -101,7 +101,7 @@ async def get_me(
         default_currency=current_user.default_currency,
         is_active=current_user.is_active,
         is_verified=current_user.is_verified,
-        has_password=bool(current_user.hashed_password),
+        has_password=bool(current_user.hashed_password or getattr(current_user, "_token_has_password", False)),
         is_pro=is_pro,
         created_at=current_user.created_at
     )
@@ -136,7 +136,7 @@ async def update_me(
         default_currency=current_user.default_currency,
         is_active=current_user.is_active,
         is_verified=current_user.is_verified,
-        has_password=bool(current_user.hashed_password),
+        has_password=bool(current_user.hashed_password or getattr(current_user, "_token_has_password", False)),
         is_pro=is_pro,
         created_at=current_user.created_at
     )

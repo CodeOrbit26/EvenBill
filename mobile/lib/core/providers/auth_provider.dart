@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart'
+    show AuthChangeEvent, Session;
 
 import '../models/user_model.dart';
 import '../network/api_client.dart';
@@ -84,6 +86,8 @@ class AuthState {
 class AuthNotifier extends Notifier<AuthState> {
   late final AuthRepository _authRepository;
   late final TokenStorage _tokenStorage;
+  StreamSubscription<dynamic>? _authStateSubscription;
+  int _authEpoch = 0;
 
   @override
   AuthState build() {
@@ -100,14 +104,23 @@ class AuthNotifier extends Notifier<AuthState> {
     // Listen to Supabase auth state change events if active
     final client = SupabaseService.client;
     if (client != null) {
-      client.auth.onAuthStateChange.listen((data) {
+      _authStateSubscription?.cancel();
+      _authStateSubscription = client.auth.onAuthStateChange.listen((data) {
         final AuthChangeEvent event = data.event;
         final Session? session = data.session;
         if (!ref.mounted) return;
 
         if (event == AuthChangeEvent.signedOut) {
-          state = const AuthState.unauthenticated();
-        } else if (event == AuthChangeEvent.tokenRefreshed && session != null) {
+          _authEpoch++;
+          _tokenStorage.clearAll();
+          if (state.status != AuthStatus.expired) {
+            state = const AuthState.unauthenticated();
+          }
+        } else if ((event == AuthChangeEvent.tokenRefreshed ||
+                event == AuthChangeEvent.signedIn ||
+                event == AuthChangeEvent.userUpdated ||
+                event == AuthChangeEvent.passwordRecovery) &&
+            session != null) {
           _tokenStorage.saveTokens(
             accessToken: session.accessToken,
             refreshToken: session.refreshToken ?? '',
@@ -116,9 +129,14 @@ class AuthNotifier extends Notifier<AuthState> {
       });
     }
 
+    ref.onDispose(() {
+      _authStateSubscription?.cancel();
+      _authStateSubscription = null;
+    });
+
     // Auto-restore session asynchronously on app start
     Future.microtask(() {
-      if (ref.mounted) {
+      if (ref.mounted && _authEpoch == 0) {
         restoreSession();
       }
     });
@@ -129,12 +147,21 @@ class AuthNotifier extends Notifier<AuthState> {
   /// Restores session from secure storage, validating credentials against backend
   Future<void> restoreSession() async {
     if (!ref.mounted) return;
+    final epoch = _authEpoch;
     state = const AuthState.initializing();
 
     // Synchronize Supabase active session to token storage if present
     final client = SupabaseService.client;
     if (client != null) {
-      final currentSession = client.auth.currentSession;
+      Session? currentSession = client.auth.currentSession;
+      if (currentSession != null && currentSession.isExpired) {
+        try {
+          final refreshRes = await client.auth.refreshSession();
+          currentSession = refreshRes.session ?? currentSession;
+        } catch (_) {
+          // Leave existing session; getMe() / refreshToken() handles offline vs expired uniformly below
+        }
+      }
       if (currentSession != null) {
         await _tokenStorage.saveTokens(
           accessToken: currentSession.accessToken,
@@ -143,11 +170,13 @@ class AuthNotifier extends Notifier<AuthState> {
       }
     }
 
+    if (!ref.mounted || epoch != _authEpoch) return;
+
     final hasAccess = await _tokenStorage.hasAccessToken();
     final refreshToken = await _tokenStorage.getRefreshToken();
 
     if (!hasAccess && (refreshToken == null || refreshToken.isEmpty)) {
-      if (ref.mounted) {
+      if (ref.mounted && epoch == _authEpoch) {
         state = const AuthState.unauthenticated();
       }
       return;
@@ -156,7 +185,7 @@ class AuthNotifier extends Notifier<AuthState> {
     try {
       if (hasAccess) {
         final user = await _authRepository.getMe();
-        if (ref.mounted) {
+        if (ref.mounted && epoch == _authEpoch) {
           state = AuthState.authenticated(user);
         }
         return;
@@ -165,25 +194,38 @@ class AuthNotifier extends Notifier<AuthState> {
       // No access token, but refresh token exists: try refresh
       await _authRepository.refreshToken();
       final user = await _authRepository.getMe();
-      if (ref.mounted) {
+      if (ref.mounted && epoch == _authEpoch) {
         state = AuthState.authenticated(user);
       }
     } catch (e) {
-      if (!ref.mounted) return;
+      if (!ref.mounted || epoch != _authEpoch) return;
 
       if (e is ApiException && e.isAuthError) {
         // Access token rejected: attempt refresh
         try {
           await _authRepository.refreshToken();
           final user = await _authRepository.getMe();
-          if (ref.mounted) {
+          if (ref.mounted && epoch == _authEpoch) {
             state = AuthState.authenticated(user);
           }
           return;
-        } catch (_) {
-          await _tokenStorage.clearAll();
+        } catch (refreshErr) {
+          if (!ref.mounted || epoch != _authEpoch) return;
+          if (refreshErr is ApiException && refreshErr.isConnectionError) {
+            final cachedUser = await _tokenStorage.getCachedUser();
+            if (ref.mounted && epoch == _authEpoch) {
+              if (cachedUser != null) {
+                state = AuthState.authenticated(cachedUser);
+              } else {
+                state = AuthState.error(refreshErr.message);
+              }
+            }
+            return;
+          }
+
           final cachedUser = await _tokenStorage.getCachedUser();
-          if (ref.mounted) {
+          await _tokenStorage.clearAll();
+          if (ref.mounted && epoch == _authEpoch) {
             state = AuthState.expired(cachedUser: cachedUser);
           }
           return;
@@ -193,7 +235,7 @@ class AuthNotifier extends Notifier<AuthState> {
       if (e is ApiException && e.isConnectionError) {
         // Offline or connection failure: check if cached session exists
         final cachedUser = await _tokenStorage.getCachedUser();
-        if (ref.mounted) {
+        if (ref.mounted && epoch == _authEpoch) {
           if (cachedUser != null) {
             // Allow offline session restoration
             state = AuthState.authenticated(cachedUser);
@@ -206,7 +248,7 @@ class AuthNotifier extends Notifier<AuthState> {
 
       // Any other exception: fallback safely
       final cachedUser = await _tokenStorage.getCachedUser();
-      if (ref.mounted) {
+      if (ref.mounted && epoch == _authEpoch) {
         if (cachedUser != null) {
           state = AuthState.authenticated(cachedUser);
         } else {
@@ -221,6 +263,7 @@ class AuthNotifier extends Notifier<AuthState> {
     required String email,
     required String password,
   }) async {
+    _authEpoch++;
     try {
       final user = await _authRepository.login(
         email: email,
@@ -247,6 +290,7 @@ class AuthNotifier extends Notifier<AuthState> {
     String? phoneNumber,
     String defaultCurrency = 'USD',
   }) async {
+    _authEpoch++;
     try {
       final user = await _authRepository.register(
         email: email,
@@ -260,6 +304,12 @@ class AuthNotifier extends Notifier<AuthState> {
       }
       return user;
     } catch (e) {
+      if (e is EmailConfirmationRequiredException) {
+        if (ref.mounted) {
+          state = const AuthState.unauthenticated();
+        }
+        rethrow;
+      }
       final message = e is ApiException ? e.message : e.toString();
       if (ref.mounted) {
         state = AuthState.error(message);
@@ -278,6 +328,7 @@ class AuthNotifier extends Notifier<AuthState> {
     String? phoneNumber,
     String? password,
   }) async {
+    _authEpoch++;
     try {
       final user = await _authRepository.loginWithOAuth(
         provider: provider,
@@ -301,12 +352,18 @@ class AuthNotifier extends Notifier<AuthState> {
     }
   }
 
+  /// Requests password recovery instructions without disturbing current UI state
+  Future<void> resetPasswordForEmail(String email) async {
+    await _authRepository.resetPasswordForEmail(email);
+  }
+
   /// Sets or updates password and phone number for authenticated user
   Future<UserModel> setPassword({
     required String password,
     String? phoneNumber,
     String? fullName,
   }) async {
+    _authEpoch++;
     try {
       final user = await _authRepository.setPassword(
         password: password,
@@ -335,6 +392,7 @@ class AuthNotifier extends Notifier<AuthState> {
 
   /// Clears user session and tokens
   Future<void> signOut() async {
+    _authEpoch++;
     await _authRepository.signOut();
     if (ref.mounted) {
       state = const AuthState.unauthenticated();
@@ -344,6 +402,7 @@ class AuthNotifier extends Notifier<AuthState> {
   /// Marks session as expired (e.g. from 401 refresh failure)
   void markExpired([String? reason]) {
     if (!ref.mounted) return;
+    _authEpoch++;
     final cachedUser = state.user;
     state = AuthState.expired(message: reason, cachedUser: cachedUser);
   }

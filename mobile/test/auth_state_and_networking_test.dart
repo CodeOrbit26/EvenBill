@@ -13,6 +13,7 @@ import 'package:evenbill/core/repositories/auth_repository.dart';
 import 'package:evenbill/core/di/injection.dart';
 import 'package:evenbill/routing/app_router.dart';
 import 'package:evenbill/routing/route_names.dart';
+import 'package:evenbill/screens/auth/registration_screen.dart';
 import 'package:evenbill/screens/auth/sign_in_screen.dart';
 import 'package:evenbill/screens/overview/overview_screen.dart';
 import 'mocks/mock_repositories.dart';
@@ -449,6 +450,230 @@ void main() {
         expect(state.status, AuthStatus.authenticated);
         expect(state.user?.email, 'test.user@example.com');
         expect(user.fullName, 'Abhay Gupta');
+      } finally {
+        container.dispose();
+      }
+    });
+
+    test('Test 16: Registration requiring email confirmation raises EmailConfirmationRequiredException & leaves state unauthenticated', () async {
+      final container = ProviderContainer();
+      try {
+        final mockAuth = MockAuthRepository(tokenStorage: testTokenStorage);
+        mockAuth.requireEmailConfirmation = true;
+        Injection.setMockRepositories(tokens: testTokenStorage, auth: mockAuth);
+
+        final notifier = container.read(authProvider.notifier);
+        try {
+          await notifier.register(
+            email: 'unconfirmed@evenbill.app',
+            password: 'StrongPassword123!',
+            fullName: 'Unconfirmed User',
+          );
+          fail('Expected EmailConfirmationRequiredException');
+        } catch (e) {
+          expect(e, isA<EmailConfirmationRequiredException>());
+        }
+
+        final state = container.read(authProvider);
+        expect(state.status, AuthStatus.unauthenticated);
+        expect(state.isAuthenticated, isFalse);
+      } finally {
+        container.dispose();
+      }
+    });
+
+    test('Test 17: Login with unconfirmed email raises error with clear guidance message', () async {
+      final container = ProviderContainer();
+      try {
+        final mockAuth = MockAuthRepository(tokenStorage: testTokenStorage);
+        mockAuth.throwEmailNotConfirmedOnLogin = true;
+        Injection.setMockRepositories(tokens: testTokenStorage, auth: mockAuth);
+
+        final notifier = container.read(authProvider.notifier);
+        try {
+          await notifier.login(email: 'pending@evenbill.app', password: 'Password123!');
+          fail('Expected ApiException');
+        } catch (e) {
+          expect(e, isA<ApiException>());
+          final apiErr = e as ApiException;
+          expect(apiErr.statusCode, 401);
+          expect(apiErr.message.toLowerCase(), contains('email not confirmed'));
+        }
+
+        final state = container.read(authProvider);
+        expect(state.status, AuthStatus.error);
+        expect(state.errorMessage?.toLowerCase(), contains('email not confirmed'));
+      } finally {
+        container.dispose();
+      }
+    });
+
+    testWidgets('Test 18: RegistrationScreen routes to SignIn with verification notice when confirmation is required', (tester) async {
+      final mockAuth = MockAuthRepository(tokenStorage: testTokenStorage);
+      mockAuth.requireEmailConfirmation = true;
+      Injection.setMockRepositories(tokens: testTokenStorage, auth: mockAuth);
+
+      bool navigatedToLogin = false;
+      bool registeredSuccess = false;
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: RegistrationScreen(
+              onRegisterSuccess: () => registeredSuccess = true,
+              onNavigateToLogin: () => navigatedToLogin = true,
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final fields = find.byType(TextField);
+      await tester.enterText(fields.at(0), 'Confirm Tester');
+      await tester.enterText(fields.at(1), 'confirm.tester@evenbill.app');
+      await tester.enterText(fields.at(3), 'StrongPass123!');
+      await tester.pumpAndSettle();
+
+      final submitBtn = find.text('Create Account').last;
+      await tester.ensureVisible(submitBtn);
+      await tester.tap(submitBtn);
+      await tester.pumpAndSettle();
+
+      expect(registeredSuccess, isFalse);
+      expect(navigatedToLogin, isTrue);
+      expect(
+        find.text('Account created! Please check your email to verify your account before logging in.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('Test 19: SignInScreen shows email confirmation guidance when Email not confirmed returned', (tester) async {
+      final mockAuth = MockAuthRepository(tokenStorage: testTokenStorage);
+      mockAuth.throwEmailNotConfirmedOnLogin = true;
+      Injection.setMockRepositories(tokens: testTokenStorage, auth: mockAuth);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: SignInScreen(
+              onSignInSuccess: () {},
+              onNavigateToRegister: () {},
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).first, 'pending@evenbill.app');
+      await tester.enterText(find.byType(TextField).last, 'Password123!');
+      await tester.tap(find.text('Sign In').last);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Your email address is not confirmed yet. Please check your inbox and verify your account before signing in.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('Test 20: SignInScreen Forgot Password validates email and invokes password recovery', (tester) async {
+      final mockAuth = MockAuthRepository(tokenStorage: testTokenStorage);
+      Injection.setMockRepositories(tokens: testTokenStorage, auth: mockAuth);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: SignInScreen(
+              onSignInSuccess: () {},
+              onNavigateToRegister: () {},
+              onBack: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).first, 'Recover.User@EvenBill.App');
+      await tester.tap(find.text('Forgot Password?'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Reset Password'), findsOneWidget);
+      await tester.tap(find.text('Send Reset Link'));
+      await tester.pumpAndSettle();
+
+      expect(mockAuth.lastPasswordResetEmail, 'recover.user@evenbill.app');
+      expect(
+        find.text('Password recovery instructions sent to Recover.User@EvenBill.App if an account exists.'),
+        findsOneWidget,
+      );
+    });
+
+    test('Test 21: ApiClient does not fire session expiry without prior access or loop endlessly on repeated 401', () async {
+      int refreshCalls = 0;
+      int expiryCallbacks = 0;
+
+      final dio = Dio(BaseOptions(baseUrl: 'http://test.local'));
+      dio.httpClientAdapter = _MockHttpAdapter((options) {
+        if (options.path.contains('/auth/refresh')) {
+          refreshCalls++;
+          return ResponseBody.fromString(
+            '{"data": {"access_token": "still_bad_access", "refresh_token": "r2"}}',
+            200,
+            headers: {
+              Headers.contentTypeHeader: [Headers.jsonContentType],
+            },
+          );
+        }
+        return ResponseBody.fromString('{"detail": "Unauthorized"}', 401);
+      });
+
+      final apiClient = ApiClient(
+        customDio: dio,
+        customTokenStorage: testTokenStorage,
+        onSessionExpired: (_) => expiryCallbacks++,
+      );
+
+      // Case A: Unauthenticated call (no stored access or refresh) -> must NOT trigger session expiry
+      await expectLater(
+        () => apiClient.get('/protected-resource'),
+        throwsA(isA<ApiException>()),
+      );
+      expect(refreshCalls, 0);
+      expect(expiryCallbacks, 0);
+
+      // Case B: Authenticated call where retried request STILL gets 401 -> refresh runs only once
+      await testTokenStorage.saveTokens(
+        accessToken: 'expired_access',
+        refreshToken: 'valid_refresh',
+      );
+      await expectLater(
+        () => apiClient.get('/protected-resource'),
+        throwsA(isA<ApiException>()),
+      );
+      expect(refreshCalls, 1);
+    });
+
+    test('Test 22: AuthNotifier.setPassword updates hasPassword flag on authenticated user', () async {
+      final container = ProviderContainer();
+      try {
+        final mockAuth = MockAuthRepository(tokenStorage: testTokenStorage);
+        Injection.setMockRepositories(tokens: testTokenStorage, auth: mockAuth);
+
+        final notifier = container.read(authProvider.notifier);
+        final oauthUser = await notifier.loginWithOAuth(
+          provider: 'google',
+          email: 'google.user@evenbill.app',
+          fullName: 'Google User',
+        );
+        expect(oauthUser.hasPassword, isFalse);
+
+        final updated = await notifier.setPassword(
+          password: 'NewDirectPassword123!',
+          fullName: 'Google User Updated',
+        );
+        expect(updated.hasPassword, isTrue);
+        expect(container.read(authProvider).user?.hasPassword, isTrue);
       } finally {
         container.dispose();
       }

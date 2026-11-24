@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../constants/api_constants.dart';
+import '../services/supabase_service.dart';
 import 'token_storage.dart';
 
 class ApiException implements Exception {
@@ -56,30 +60,35 @@ class ApiClient {
         onRequest: (options, handler) async {
           final isPublicAuth = options.path.contains('/auth/login') ||
               options.path.contains('/auth/register') ||
+              options.path.contains('/auth/refresh') ||
+              options.path.contains('/auth/oauth') ||
               options.path.contains('/health');
 
-          final token = await tokenStorage.getAccessToken();
-          if (token != null && token.isNotEmpty) {
-            options.headers['Authorization'] = 'Bearer $token';
-          } else if (!isPublicAuth && !options.headers.containsKey('Authorization')) {
-            // Protected request without access token
-            // Still let it pass to let backend or mock handle, but ensure no stale header
+          if (!isPublicAuth) {
+            final token = await tokenStorage.getAccessToken();
+            if (token != null && token.isNotEmpty) {
+              options.headers['Authorization'] = 'Bearer $token';
+            }
           }
           return handler.next(options);
         },
         onError: (DioException error, handler) async {
           final isAuthEndpoint = error.requestOptions.path.contains('/auth/login') ||
               error.requestOptions.path.contains('/auth/register') ||
-              error.requestOptions.path.contains('/auth/refresh');
+              error.requestOptions.path.contains('/auth/refresh') ||
+              error.requestOptions.path.contains('/auth/oauth') ||
+              error.requestOptions.path.contains('/auth/logout');
+          final alreadyRetried = error.requestOptions.extra['_authRetried'] == true;
 
-          // Automatic token refresh on 401 for protected endpoints
-          if (error.response?.statusCode == 401 && !isAuthEndpoint) {
+          // Automatic token refresh on 401 for protected endpoints (at most once per request)
+          if (error.response?.statusCode == 401 && !isAuthEndpoint && !alreadyRetried) {
             if (_refreshCompleter != null) {
               // Refresh already in progress: wait for it and retry
               try {
                 final newAccess = await _refreshCompleter!.future;
                 if (newAccess != null && newAccess.isNotEmpty) {
                   final retryOptions = error.requestOptions;
+                  retryOptions.extra['_authRetried'] = true;
                   retryOptions.headers['Authorization'] = 'Bearer $newAccess';
                   final retryRes = await dio.fetch(retryOptions);
                   return handler.resolve(retryRes);
@@ -88,57 +97,118 @@ class ApiClient {
               return handler.next(error);
             }
 
-            final refreshToken = await tokenStorage.getRefreshToken();
-            if (refreshToken != null && refreshToken.isNotEmpty) {
-              final completer = Completer<String?>();
-              _refreshCompleter = completer;
-              try {
-                final refreshDio = Dio(
-                  BaseOptions(
-                    baseUrl: ApiConstants.baseUrl,
-                    connectTimeout: const Duration(seconds: 10),
-                    receiveTimeout: const Duration(seconds: 10),
-                  ),
-                );
-                refreshDio.httpClientAdapter = dio.httpClientAdapter;
-                final res = await refreshDio.post(
-                  ApiConstants.refresh,
-                  data: {'refresh_token': refreshToken},
-                );
+            final hadAccess = await tokenStorage.hasAccessToken();
+            final storedRefresh = await tokenStorage.getRefreshToken();
+            final client = SupabaseService.client;
+            final hasSupabaseSession = client?.auth.currentSession != null;
 
-                if (res.statusCode == 200 && res.data != null) {
-                  final data = res.data is Map<String, dynamic> && res.data.containsKey('data')
-                      ? res.data['data']
-                      : res.data;
-                  final newAccess = data['access_token'] as String;
-                  final newRefresh = data['refresh_token'] as String;
-                  await tokenStorage.saveTokens(accessToken: newAccess, refreshToken: newRefresh);
-                  completer.complete(newAccess);
-
-                  // Retry the original request
-                  final retryOptions = error.requestOptions;
-                  retryOptions.headers['Authorization'] = 'Bearer $newAccess';
-                  final retryRes = await dio.fetch(retryOptions);
-                  return handler.resolve(retryRes);
-                } else {
-                  completer.complete(null);
-                  await tokenStorage.clearAll();
-                  onSessionExpired?.call('Your session has expired. Please sign in again.');
-                }
-              } catch (_) {
-                completer.complete(null);
-                await tokenStorage.clearAll();
-                onSessionExpired?.call('Your session has expired. Please sign in again.');
-              } finally {
-                _refreshCompleter = null;
-              }
-            } else {
-              // 401 with no refresh token available
-              final hadAccess = await tokenStorage.hasAccessToken();
+            if (!hasSupabaseSession && (storedRefresh == null || storedRefresh.isEmpty)) {
               if (hadAccess) {
                 await tokenStorage.clearAll();
                 onSessionExpired?.call('Your session has expired. Please sign in again.');
               }
+              return handler.next(error);
+            }
+
+            final completer = Completer<String?>();
+            _refreshCompleter = completer;
+            try {
+              String? newAccess;
+              bool isNetworkFailure = false;
+
+              // 1. Prioritize Supabase session refresh when Supabase session is active
+              if (hasSupabaseSession) {
+                try {
+                  final refreshRes = await client!.auth.refreshSession();
+                  final session = refreshRes.session;
+                  if (session != null) {
+                    newAccess = session.accessToken;
+                    await tokenStorage.saveTokens(
+                      accessToken: newAccess,
+                      refreshToken: session.refreshToken ?? '',
+                    );
+                  }
+                } on AuthRetryableFetchException catch (e) {
+                  isNetworkFailure = true;
+                  debugPrint('[ApiClient] Supabase refresh network error: $e');
+                } on SocketException catch (e) {
+                  isNetworkFailure = true;
+                  debugPrint('[ApiClient] Supabase refresh socket error: $e');
+                } on TimeoutException catch (e) {
+                  isNetworkFailure = true;
+                  debugPrint('[ApiClient] Supabase refresh timeout: $e');
+                } catch (e) {
+                  debugPrint('[ApiClient] Supabase refresh exception: $e');
+                }
+              }
+
+              // 2. Fall back to backend refresh for legacy JWT sessions or uninitialized Supabase tests
+              final shouldTryBackendRefresh = (newAccess == null || newAccess.isEmpty) &&
+                  !isNetworkFailure &&
+                  storedRefresh != null &&
+                  storedRefresh.isNotEmpty &&
+                  (client == null || storedRefresh.split('.').length == 3);
+
+              if (shouldTryBackendRefresh) {
+                try {
+                  final refreshDio = Dio(
+                    BaseOptions(
+                      baseUrl: ApiConstants.baseUrl,
+                      connectTimeout: const Duration(seconds: 10),
+                      receiveTimeout: const Duration(seconds: 10),
+                    ),
+                  );
+                  refreshDio.httpClientAdapter = dio.httpClientAdapter;
+                  final res = await refreshDio.post(
+                    ApiConstants.refresh,
+                    data: {'refresh_token': storedRefresh},
+                  );
+
+                  if (res.statusCode == 200 && res.data != null) {
+                    final data = res.data is Map<String, dynamic> && res.data.containsKey('data')
+                        ? res.data['data']
+                        : res.data;
+                    newAccess = data['access_token'] as String;
+                    final newRefresh = data['refresh_token'] as String;
+                    await tokenStorage.saveTokens(accessToken: newAccess, refreshToken: newRefresh);
+                  }
+                } on DioException catch (e) {
+                  if (e.type == DioExceptionType.connectionTimeout ||
+                      e.type == DioExceptionType.receiveTimeout ||
+                      e.type == DioExceptionType.sendTimeout ||
+                      e.type == DioExceptionType.connectionError) {
+                    isNetworkFailure = true;
+                  }
+                }
+              }
+
+              if (newAccess != null && newAccess.isNotEmpty) {
+                completer.complete(newAccess);
+
+                // Retry the original request once with refreshed Bearer token
+                final retryOptions = error.requestOptions;
+                retryOptions.extra['_authRetried'] = true;
+                retryOptions.headers['Authorization'] = 'Bearer $newAccess';
+                final retryRes = await dio.fetch(retryOptions);
+                return handler.resolve(retryRes);
+              } else if (isNetworkFailure) {
+                // Preserve local offline session instead of wiping cache on transient network loss
+                completer.complete(null);
+              } else {
+                completer.complete(null);
+                if (hadAccess) {
+                  await tokenStorage.clearAll();
+                  onSessionExpired?.call('Your session has expired. Please sign in again.');
+                }
+              }
+            } catch (_) {
+              completer.complete(null);
+              if (hadAccess) {
+                await tokenStorage.clearAll();
+                onSessionExpired?.call('Your session has expired. Please sign in again.');
+              }
+            } finally {
+              _refreshCompleter = null;
             }
           }
           return handler.next(error);

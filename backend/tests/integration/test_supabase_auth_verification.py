@@ -380,3 +380,61 @@ async def test_auto_provision_profile_checks_verified_claim(
     assert user_data2["is_verified"] is True
 
 
+@pytest.mark.asyncio
+async def test_has_password_derived_from_supabase_email_provider_claim(
+    client: AsyncClient,
+    db_session: AsyncSession
+):
+    """
+    Supabase email/password users do not store hashed_password in public.profiles
+    once managed by Supabase Auth, yet /auth/me MUST report has_password=True when
+    the verified token app_metadata includes the 'email' provider so mobile
+    never falsely prompts them with the Google direct-password setup screen.
+    """
+    email_user_sub = str(uuid.uuid4())
+    email_payload = {
+        "sub": email_user_sub,
+        "email": "supabase.email.user@evenbill.app",
+        "aud": settings.SUPABASE_AUDIENCE,
+        "iss": settings.supabase_issuer,
+        "exp": int(time.time()) + 3600,
+        "email_confirmed_at": "2026-11-24T10:00:00Z",
+        "app_metadata": {"provider": "email", "providers": ["email"]},
+        "user_metadata": {"full_name": "Supabase Email User"}
+    }
+    email_token = jwt.encode(email_payload, settings.SECRET_KEY, algorithm="HS256")
+
+    res = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {email_token}"}
+    )
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["email"] == "supabase.email.user@evenbill.app"
+    assert data["is_verified"] is True
+    assert data["has_password"] is True
+
+    # Conversely, a Google-only OAuth user reports has_password=False until password is added
+    google_user_sub = str(uuid.uuid4())
+    google_payload = {
+        "sub": google_user_sub,
+        "email": "google.only.user@evenbill.app",
+        "aud": settings.SUPABASE_AUDIENCE,
+        "iss": settings.supabase_issuer,
+        "exp": int(time.time()) + 3600,
+        "app_metadata": {"provider": "google", "providers": ["google"]},
+        "user_metadata": {"full_name": "Google Only User", "email_verified": True}
+    }
+    google_token = jwt.encode(google_payload, settings.SECRET_KEY, algorithm="HS256")
+
+    g_res = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {google_token}"}
+    )
+    assert g_res.status_code == 200
+    g_data = g_res.json()["data"]
+    assert g_data["email"] == "google.only.user@evenbill.app"
+    assert g_data["is_verified"] is True
+    assert g_data["has_password"] is False
+
+

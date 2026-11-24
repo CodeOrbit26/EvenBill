@@ -110,6 +110,17 @@ async def get_current_user(
             detail="User account is deactivated"
         )
 
+    # Derive password-auth capability from verified JWT metadata without modifying DB schema
+    app_meta = payload.get("app_metadata") or {}
+    providers = app_meta.get("providers") or []
+    if isinstance(providers, str):
+        providers = [providers]
+    token_has_email_auth = (
+        "email" in providers
+        or app_meta.get("provider") == "email"
+    )
+    setattr(user, "_token_has_password", token_has_email_auth)
+
     # Ensure Free tier subscription exists for authenticated user
     if not user.subscriptions:
         sub_stmt = select(Subscription).where(Subscription.user_id == user.id)

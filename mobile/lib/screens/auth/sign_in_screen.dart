@@ -111,14 +111,23 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
       if (mounted) {
         setState(() => _isLoading = false);
         String msg;
+        final isUnconfirmedEmail =
+            (e is ApiException &&
+                (e.details?['code'] == 'email_not_confirmed' ||
+                    e.message.toLowerCase().contains('email not confirmed'))) ||
+            e.toString().toLowerCase().contains('email not confirmed');
         if (e is ApiException) {
           if (e.isConnectionError) {
             msg = 'Unable to connect to EvenBill server. Please verify backend is running.';
+          } else if (isUnconfirmedEmail) {
+            msg = 'Your email address is not confirmed yet. Please check your inbox and verify your account before signing in.';
           } else if (e.statusCode == 401) {
             msg = 'Invalid email, phone number, or password. Please try again or create an account.';
           } else {
             msg = e.message;
           }
+        } else if (isUnconfirmedEmail) {
+          msg = 'Your email address is not confirmed yet. Please check your inbox and verify your account before signing in.';
         } else {
           msg = e.toString();
         }
@@ -169,6 +178,92 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
         setState(() => _isSocialLoading = false);
         final msg = e is ApiException ? e.message : e.toString();
         AppSnackbar.showError(context, 'Google Sign In failed: $msg');
+      }
+    }
+  }
+
+  Future<void> _handleForgotPassword() async {
+    final currentInput = _emailController.text.trim();
+    String targetEmail = currentInput.contains('@') ? currentInput : '';
+    String? inlineError;
+
+    final confirmedEmail = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          title: const Text('Reset Password'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Enter your registered email address to receive password recovery instructions.',
+                style: TextStyle(fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                initialValue: targetEmail,
+                keyboardType: TextInputType.emailAddress,
+                autofocus: targetEmail.isEmpty,
+                decoration: InputDecoration(
+                  labelText: 'Email Address',
+                  hintText: 'name@example.com',
+                  errorText: inlineError,
+                ),
+                onChanged: (val) {
+                  targetEmail = val.trim();
+                  if (inlineError != null) {
+                    setDialogState(() => inlineError = null);
+                  }
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (targetEmail.isEmpty || !targetEmail.contains('@')) {
+                  setDialogState(
+                    () => inlineError = 'Please enter a valid email address',
+                  );
+                  return;
+                }
+                Navigator.of(ctx).pop(targetEmail);
+              },
+              child: const Text('Send Reset Link'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmedEmail == null || !mounted) return;
+
+    try {
+      try {
+        await ref.read(authProvider.notifier).resetPasswordForEmail(confirmedEmail);
+      } catch (e) {
+        if (e.toString().contains('ProviderScope')) {
+          await Injection.authRepository.resetPasswordForEmail(confirmedEmail);
+        } else {
+          rethrow;
+        }
+      }
+      if (mounted) {
+        AppSnackbar.showInfo(
+          context,
+          'Password recovery instructions sent to $confirmedEmail if an account exists.',
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        final msg = e is ApiException ? e.message : e.toString();
+        AppSnackbar.showError(context, 'Password reset failed: $msg');
       }
     }
   }
@@ -334,20 +429,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                       minimumSize: Size.zero,
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
-                    onPressed: () async {
-                      final email = _emailController.text.trim();
-                      if (email.isNotEmpty) {
-                        try {
-                          await Injection.authRepository.resetPasswordForEmail(email);
-                        } catch (_) {}
-                      }
-                      if (mounted) {
-                        AppSnackbar.showInfo(
-                          context,
-                          'Password recovery instructions sent to your email if account exists.',
-                        );
-                      }
-                    },
+                    onPressed: _handleForgotPassword,
                     child: Text(
                       'Forgot Password?',
                       style: TextStyle(
