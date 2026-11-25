@@ -9,6 +9,7 @@ class TokenStorage {
   static const _keyUser = 'evenbill_cached_user';
   static const _keyLastEmail = 'evenbill_last_email';
   static const _keyRememberEmail = 'evenbill_remember_email_enabled';
+  static const _keySetupSkippedPrefix = 'evenbill_setup_skipped_';
 
   final FlutterSecureStorage _storage;
   final Map<String, String> _fallback = {};
@@ -177,6 +178,28 @@ class TokenStorage {
     final token = await getAccessToken();
     return token != null && token.isNotEmpty;
   }
+
+  Future<void> saveSetupSkipped(String userId, bool skipped) async {
+    await ensureFreshInstallCheck();
+    final key = '$_keySetupSkippedPrefix$userId';
+    _fallback[key] = skipped ? 'true' : 'false';
+    if (_isTest) return;
+    try {
+      await _storage.write(key: key, value: skipped ? 'true' : 'false');
+    } catch (_) {}
+  }
+
+  Future<bool> isSetupSkipped(String userId) async {
+    await ensureFreshInstallCheck();
+    final key = '$_keySetupSkippedPrefix$userId';
+    if (_isTest) return _fallback[key] == 'true';
+    try {
+      final val = await _storage.read(key: key);
+      return val == 'true' || _fallback[key] == 'true';
+    } catch (_) {
+      return _fallback[key] == 'true';
+    }
+  }
 }
 
 class InMemoryTokenStorage extends TokenStorage {
@@ -248,4 +271,13 @@ class InMemoryTokenStorage extends TokenStorage {
     final token = await getAccessToken();
     return token != null && token.isNotEmpty;
   }
+
+  @override
+  Future<void> saveSetupSkipped(String userId, bool skipped) async {
+    _memory['setup_skipped_$userId'] = skipped ? 'true' : 'false';
+  }
+
+  @override
+  Future<bool> isSetupSkipped(String userId) async =>
+      _memory['setup_skipped_$userId'] == 'true';
 }

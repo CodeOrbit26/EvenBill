@@ -8,6 +8,7 @@ import logging
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
@@ -85,7 +86,7 @@ async def get_current_user(
 
             full_name = payload.get("user_metadata", {}).get("full_name") or clean_email.split("@")[0]
             default_currency = payload.get("user_metadata", {}).get("default_currency") or "USD"
-            user = User(
+            new_user = User(
                 id=user_id,
                 email=clean_email,
                 full_name=full_name,
@@ -93,9 +94,23 @@ async def get_current_user(
                 is_active=True,
                 is_verified=is_email_verified
             )
-            db.add(user)
-            await db.commit()
-            stmt = select(User).where(User.id == user.id).options(selectinload(User.subscriptions))
+            try:
+                async with db.begin_nested():
+                    db.add(new_user)
+                    await db.flush()
+                await db.commit()
+            except IntegrityError:
+                await db.rollback()
+                # Check if a concurrent request created the colliding email under a different UUID
+                stmt_coll = select(User).where(func.lower(User.email) == clean_email)
+                res_coll = await db.execute(stmt_coll)
+                colliding = res_coll.scalar_one_or_none()
+                if colliding and colliding.id != user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="An account with this email address already exists. Please sign in with your original authentication provider."
+                    )
+            stmt = select(User).where(User.id == user_id).options(selectinload(User.subscriptions))
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
 
@@ -126,8 +141,13 @@ async def get_current_user(
         sub_stmt = select(Subscription).where(Subscription.user_id == user.id)
         sub_res = await db.execute(sub_stmt)
         if not sub_res.scalar_one_or_none():
-            db.add(Subscription(user_id=user.id, tier="FREE", status="ACTIVE"))
-            await db.commit()
+            try:
+                async with db.begin_nested():
+                    db.add(Subscription(user_id=user.id, tier="FREE", status="ACTIVE"))
+                    await db.flush()
+                await db.commit()
+            except IntegrityError:
+                await db.rollback()
             stmt = select(User).where(User.id == user.id).options(selectinload(User.subscriptions))
             result = await db.execute(stmt)
             user = result.scalar_one_or_none() or user

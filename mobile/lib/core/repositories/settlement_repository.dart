@@ -2,6 +2,7 @@ import 'package:uuid/uuid.dart';
 import '../network/api_client.dart';
 import '../models/settlement_model.dart';
 import '../constants/api_constants.dart';
+import '../utils/identity_utils.dart';
 
 class SettlementRepository {
   final ApiClient apiClient;
@@ -20,6 +21,14 @@ class SettlementRepository {
     String? transactionReference,
     String? notes,
   }) async {
+    if (groupId != null) {
+      ensureValidBackendUuid(groupId, fieldName: 'group_id');
+    }
+    if (payerId != null && payerId.isNotEmpty) {
+      ensureValidBackendUuid(payerId, fieldName: 'payer_id');
+    }
+    ensureValidBackendUuid(recipientId, fieldName: 'recipient_id');
+
     final key = idempotencyKey ?? _uuid.v4();
 
     final res = await apiClient.post(

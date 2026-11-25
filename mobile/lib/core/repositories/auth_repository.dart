@@ -93,39 +93,6 @@ class AuthRepository {
     );
   }
 
-  UserModel _buildUserFromSupabase(
-    User? sbUser, {
-    required String fallbackEmail,
-    String? fallbackFullName,
-    String? fallbackAvatarUrl,
-    String? fallbackPhoneNumber,
-    String defaultCurrency = 'USD',
-    bool forceHasPassword = false,
-  }) {
-    final meta = sbUser?.userMetadata ?? const <String, dynamic>{};
-    final email = (sbUser?.email ?? fallbackEmail).trim().toLowerCase();
-    return UserModel(
-      id: sbUser?.id ?? '',
-      email: email,
-      fullName: (fallbackFullName?.trim().isNotEmpty == true
-              ? fallbackFullName!.trim()
-              : (meta['full_name'] as String?) ??
-                  (meta['name'] as String?)) ??
-          (email.contains('@') ? email.split('@').first : 'User'),
-      avatarUrl: fallbackAvatarUrl ??
-          (meta['avatar_url'] as String?) ??
-          (meta['picture'] as String?),
-      phoneNumber: fallbackPhoneNumber ?? (meta['phone_number'] as String?),
-      defaultCurrency:
-          ((meta['default_currency'] as String?) ?? defaultCurrency)
-              .toUpperCase(),
-      isActive: true,
-      isVerified: _supabaseUserIsVerified(sbUser),
-      hasPassword: forceHasPassword || _supabaseUserHasPassword(sbUser),
-      createdAt: DateTime.now(),
-    );
-  }
-
   Future<void> _clearRejectedLocalSession() async {
     try {
       await SupabaseService.client?.auth.signOut(scope: SignOutScope.local);
@@ -134,8 +101,9 @@ class AuthRepository {
   }
 
   /// Persists session tokens and fetches the authoritative FastAPI profile.
-  /// Offline network errors fall back gracefully to Supabase session metadata;
-  /// policy rejections (401/403/409 identity conflicts) clean up local state and rethrow.
+  /// Retries once on transient connection errors (e.g. cold starts), and clears
+  /// unverified local session state on rejection or persistent network failure
+  /// so a device never enters an empty unsynced offline shell on initial login.
   Future<UserModel> _finalizeSupabaseSession(
     Session session,
     User? sbUser, {
@@ -155,17 +123,13 @@ class AuthRepository {
       return await getMe();
     } catch (e) {
       if (e is ApiException && e.isConnectionError) {
-        final offlineUser = _buildUserFromSupabase(
-          sbUser,
-          fallbackEmail: fallbackEmail,
-          fallbackFullName: fallbackFullName,
-          fallbackAvatarUrl: fallbackAvatarUrl,
-          fallbackPhoneNumber: fallbackPhoneNumber,
-          defaultCurrency: defaultCurrency,
-          forceHasPassword: forceHasPassword,
-        );
-        await tokenStorage.saveUser(offlineUser);
-        return offlineUser;
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        try {
+          return await getMe();
+        } catch (_) {
+          await _clearRejectedLocalSession();
+          rethrow;
+        }
       }
       await _clearRejectedLocalSession();
       rethrow;

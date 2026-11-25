@@ -55,11 +55,11 @@ class ExpenseCreate(BaseModel):
     # 2. EXACT: list of SplitItem
     splits: Optional[List[SplitItem]] = None
     # 3. PERCENTAGE: dict of user_id -> percentage (summing to 100)
-    percentages: Optional[Dict[str, Decimal]] = None
+    percentages: Optional[Dict[UUIDStr, Decimal]] = None
     # 4. SHARES: dict of user_id -> share weights
-    shares: Optional[Dict[str, Decimal]] = None
+    shares: Optional[Dict[UUIDStr, Decimal]] = None
     # 5. ADJUSTMENT: dict of user_id -> offset amount (+/-)
-    adjustments: Optional[Dict[str, Decimal]] = None
+    adjustments: Optional[Dict[UUIDStr, Decimal]] = None
     # 6. ITEMIZED: items list + taxes, tips, fees, discounts
     items: Optional[List[ItemizedItemInput]] = None
     tax: Optional[Decimal] = Decimal("0")
@@ -80,9 +80,9 @@ class ExpenseUpdate(BaseModel):
     payers: Optional[List[PayerItem]] = None
     participant_ids: Optional[List[UUIDStr]] = Field(None, json_schema_extra={"example": ["4b684cb3-0ea1-4566-b333-e99d79a78bc5"]})
     splits: Optional[List[SplitItem]] = None
-    percentages: Optional[Dict[str, Decimal]] = None
-    shares: Optional[Dict[str, Decimal]] = None
-    adjustments: Optional[Dict[str, Decimal]] = None
+    percentages: Optional[Dict[UUIDStr, Decimal]] = None
+    shares: Optional[Dict[UUIDStr, Decimal]] = None
+    adjustments: Optional[Dict[UUIDStr, Decimal]] = None
     items: Optional[List[ItemizedItemInput]] = None
     tax: Optional[Decimal] = None
     tip: Optional[Decimal] = None

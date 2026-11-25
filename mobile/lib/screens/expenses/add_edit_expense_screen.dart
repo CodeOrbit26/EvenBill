@@ -14,6 +14,8 @@ import '../../core/models/expense_model.dart';
 import '../../core/models/group_model.dart';
 import '../../core/models/friend_model.dart';
 import '../../core/models/entitlement_model.dart';
+import '../../core/models/user_model.dart';
+import '../../core/utils/identity_utils.dart';
 import 'receipt_review_modal.dart';
 import 'split_preset_picker_modal.dart';
 import '../bank/bank_import_sheet.dart';
@@ -47,8 +49,11 @@ class _AddEditExpenseScreenState extends State<AddEditExpenseScreen> {
   String _selectedCurrency = 'INR';
   String _selectedCategory = 'FOOD';
   String? _selectedGroupId; // null means Direct Expense (No Group)
-  String _paidByUserId = 'current_user';
+  UserModel? _currentUser;
+  String _paidByUserId = '';
   String _paidByName = 'You';
+  bool _hasExplicitPayerSelection = false;
+  String? _contextLoadError;
   String _splitType = 'EQUAL'; // EQUAL, EXACT, PERCENTAGE, SHARES, ADJUSTMENT, ITEMIZED
   bool _isSubmitting = false;
   bool _isDirty = false;
@@ -99,6 +104,7 @@ class _AddEditExpenseScreenState extends State<AddEditExpenseScreen> {
       if (exp.payers.isNotEmpty) {
         _paidByUserId = exp.payers.first.userId;
         _paidByName = exp.payers.first.fullName;
+        _hasExplicitPayerSelection = !isPlaceholderUserId(_paidByUserId);
       }
     }
 
@@ -133,6 +139,7 @@ class _AddEditExpenseScreenState extends State<AddEditExpenseScreen> {
 
   Future<void> _loadContextData() async {
     try {
+      final currentUser = await resolveAuthenticatedUser();
       final groups = await Injection.groupRepository.listGroups();
       final friends = await Injection.friendRepository.listFriends();
       try {
@@ -153,84 +160,139 @@ class _AddEditExpenseScreenState extends State<AddEditExpenseScreen> {
           if (groups.first.baseCurrency.isNotEmpty) {
             resolvedCurrency = groups.first.baseCurrency;
           }
-        } else {
-          try {
-            final cachedUser = await Injection.tokenStorage.getCachedUser();
-            if (cachedUser != null && cachedUser.defaultCurrency.isNotEmpty) {
-              resolvedCurrency = cachedUser.defaultCurrency;
-            }
-          } catch (_) {}
+        } else if (currentUser != null && currentUser.defaultCurrency.isNotEmpty) {
+          resolvedCurrency = currentUser.defaultCurrency;
         }
       }
 
       if (mounted) {
         setState(() {
+          _currentUser = currentUser;
           _groups = groups;
           _friends = friends;
+          _contextLoadError = null;
           if (widget.initialExpense == null) {
             _selectedCurrency = resolvedCurrency;
+            if (!_hasExplicitPayerSelection &&
+                currentUser != null &&
+                !isPlaceholderUserId(currentUser.id)) {
+              _paidByUserId = currentUser.id;
+              _paidByName = currentUser.fullName.isNotEmpty ? currentUser.fullName : 'You';
+            }
           }
         });
 
         await _updateParticipantsForSelection();
       }
     } catch (_) {
-      // Fallback participants
+      final currentUser = await resolveAuthenticatedUser();
       if (mounted) {
         setState(() {
-          _availableParticipants = [
-            {'id': 'current_user', 'name': 'You'},
-            {'id': 'friend_1', 'name': 'Friend'},
-          ];
-          _selectedParticipantIds = {'current_user', 'friend_1'};
+          _currentUser = currentUser;
+          if (currentUser != null && !isPlaceholderUserId(currentUser.id)) {
+            if (widget.initialExpense == null && !_hasExplicitPayerSelection) {
+              _paidByUserId = currentUser.id;
+              _paidByName = currentUser.fullName.isNotEmpty ? currentUser.fullName : 'You';
+            }
+            _availableParticipants = [
+              {
+                'id': currentUser.id,
+                'name': currentUser.fullName.isNotEmpty ? currentUser.fullName : 'You',
+              },
+            ];
+            _selectedParticipantIds = {currentUser.id};
+            _contextLoadError = null;
+            _initParticipantControllers();
+          } else {
+            _availableParticipants = [];
+            _selectedParticipantIds = {};
+            _contextLoadError =
+                'Unable to resolve your authenticated profile. Please refresh or sign in again.';
+          }
         });
       }
     }
   }
 
   Future<void> _updateParticipantsForSelection() async {
+    final currentUser = _currentUser ?? await resolveAuthenticatedUser();
+    if (!mounted) return;
+    _currentUser = currentUser;
+
     if (_selectedGroupId != null) {
-      // Group selected: load group members
+      // Group selected: load group members with canonical UUIDs
       try {
         final detail = await Injection.groupRepository.getGroupDetails(_selectedGroupId!);
-        final participants = detail.members.map((m) => {'id': m.userId, 'name': m.fullName}).toList();
+        final participants = detail.members
+            .where((m) => !isPlaceholderUserId(m.userId))
+            .map((m) => {'id': m.userId, 'name': m.fullName})
+            .toList();
+        if (participants.isEmpty && currentUser != null && !isPlaceholderUserId(currentUser.id)) {
+          participants.add({
+            'id': currentUser.id,
+            'name': currentUser.fullName.isNotEmpty ? currentUser.fullName : 'You',
+          });
+        }
         if (mounted) {
           setState(() {
-            _availableParticipants = participants.isNotEmpty
-                ? participants
-                : [
-                    {'id': 'current_user', 'name': 'You'}
-                  ];
-            _selectedParticipantIds = _availableParticipants.map((p) => p['id']!).toSet();
+            _availableParticipants = participants;
+            _selectedParticipantIds = participants.map((p) => p['id']!).toSet();
+            if (widget.initialExpense == null && !_hasExplicitPayerSelection) {
+              final selfMatch = currentUser != null
+                  ? participants.where((p) => p['id'] == currentUser.id).firstOrNull
+                  : null;
+              final defaultPayer = selfMatch ?? (participants.isNotEmpty ? participants.first : null);
+              if (defaultPayer != null) {
+                _paidByUserId = defaultPayer['id']!;
+                _paidByName = defaultPayer['name']!;
+              }
+            }
+            _contextLoadError = participants.isEmpty
+                ? 'No valid group members found. Please reload this group.'
+                : null;
             _initParticipantControllers();
           });
         }
       } catch (_) {
-        _setFallbackParticipants();
+        if (mounted) {
+          setState(() {
+            _availableParticipants = [];
+            _selectedParticipantIds = {};
+            _contextLoadError = 'Unable to load group members. Please check connection and retry.';
+          });
+        }
       }
     } else {
-      // Direct Expense (No Group): current user + friends
-      final participants = [
-        {'id': 'current_user', 'name': 'You'},
-        ..._friends.map((f) => {'id': f.id, 'name': f.name}),
+      // Direct Expense (No Group): authenticated user UUID + friends
+      if (currentUser == null || isPlaceholderUserId(currentUser.id)) {
+        setState(() {
+          _availableParticipants = [];
+          _selectedParticipantIds = {};
+          _contextLoadError = 'Authenticated user profile is required to record an expense.';
+        });
+        return;
+      }
+
+      final participants = <Map<String, String>>[
+        {
+          'id': currentUser.id,
+          'name': currentUser.fullName.isNotEmpty ? currentUser.fullName : 'You',
+        },
+        ..._friends
+            .where((f) => f.id != currentUser.id && !isPlaceholderUserId(f.id))
+            .map((f) => {'id': f.id, 'name': f.name}),
       ];
       setState(() {
         _availableParticipants = participants;
         _selectedParticipantIds = participants.map((p) => p['id']!).toSet();
+        if (widget.initialExpense == null && !_hasExplicitPayerSelection) {
+          _paidByUserId = currentUser.id;
+          _paidByName = currentUser.fullName.isNotEmpty ? currentUser.fullName : 'You';
+        }
+        _contextLoadError = null;
         _initParticipantControllers();
       });
     }
-  }
-
-  void _setFallbackParticipants() {
-    setState(() {
-      _availableParticipants = [
-        {'id': 'current_user', 'name': 'You'},
-        {'id': 'member_2', 'name': 'Member'},
-      ];
-      _selectedParticipantIds = {'current_user', 'member_2'};
-      _initParticipantControllers();
-    });
   }
 
   void _initParticipantControllers() {
@@ -284,7 +346,36 @@ class _AddEditExpenseScreenState extends State<AddEditExpenseScreen> {
     }
 
     if (_selectedParticipantIds.isEmpty) {
-      AppSnackbar.showError(context, 'Please select at least one participant');
+      AppSnackbar.showError(
+        context,
+        _contextLoadError ?? 'Please select at least one participant',
+      );
+      return;
+    }
+
+    if (isPlaceholderUserId(_paidByUserId)) {
+      final resolved = _currentUser ?? await resolveAuthenticatedUser();
+      if (!mounted) return;
+      if (resolved != null && !isPlaceholderUserId(resolved.id)) {
+        setState(() {
+          _currentUser = resolved;
+          _paidByUserId = resolved.id;
+          _paidByName = resolved.fullName.isNotEmpty ? resolved.fullName : 'You';
+        });
+      } else {
+        AppSnackbar.showError(
+          context,
+          'Authenticated user identity unavailable. Please sign in again.',
+        );
+        return;
+      }
+    }
+
+    if (_selectedParticipantIds.any(isPlaceholderUserId)) {
+      AppSnackbar.showError(
+        context,
+        'One or more selected participants lack valid user IDs. Please reload.',
+      );
       return;
     }
 
@@ -772,7 +863,9 @@ class _AddEditExpenseScreenState extends State<AddEditExpenseScreen> {
                             child: DropdownButtonHideUnderline(
                               child: DropdownButton<String?>(
                                 isExpanded: true,
-                                value: _selectedGroupId,
+                                value: (_selectedGroupId != null && _groups.any((g) => g.id == _selectedGroupId))
+                                    ? _selectedGroupId
+                                    : null,
                                 icon: const Icon(Icons.arrow_drop_down, size: 18),
                                 items: [
                                   const DropdownMenuItem<String?>(
@@ -1035,7 +1128,12 @@ class _AddEditExpenseScreenState extends State<AddEditExpenseScreen> {
                               onTap: () {
                                 setState(() {
                                   if (_selectedParticipantIds.length == _availableParticipants.length) {
-                                    _selectedParticipantIds = {_paidByUserId};
+                                    final fallbackId = (_paidByUserId.isNotEmpty && !isPlaceholderUserId(_paidByUserId))
+                                        ? _paidByUserId
+                                        : _availableParticipants
+                                            .map((p) => p['id'] ?? '')
+                                            .firstWhere((id) => id.isNotEmpty && !isPlaceholderUserId(id), orElse: () => '');
+                                    _selectedParticipantIds = fallbackId.isNotEmpty ? {fallbackId} : {};
                                   } else {
                                     _selectedParticipantIds = _availableParticipants.map((p) => p['id']!).toSet();
                                   }
@@ -1428,6 +1526,7 @@ class _AddEditExpenseScreenState extends State<AddEditExpenseScreen> {
                 setState(() {
                   _paidByUserId = p['id']!;
                   _paidByName = p['name']!;
+                  _hasExplicitPayerSelection = true;
                 });
                 _markDirty();
                 Navigator.pop(ctx);

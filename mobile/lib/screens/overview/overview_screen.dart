@@ -82,7 +82,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
       final results = await Future.wait([
         summaryFuture,
         activitiesFuture,
-        groupsFuture.catchError((_) => <GroupModel>[]),
+        groupsFuture,
       ]);
       final summary = results[0] as ActivitySummaryModel;
       final activities = results[1] as List<ActivityItemModel>;

@@ -6,7 +6,7 @@ bilateral balances, and debt simplification with strict financial correctness.
 
 import json
 from decimal import Decimal
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Optional, Any, Set
 from datetime import datetime, timezone
 from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
@@ -25,6 +25,40 @@ from app.schemas.settlement import SettlementCreate
 
 
 class LedgerService:
+    @staticmethod
+    async def _validate_referenced_users(
+        db: AsyncSession,
+        user_ids: Set[str],
+        group_id: Optional[str] = None,
+    ) -> None:
+        """Ensures every payer/split UUID maps to an existing profile (and group member when scoped)."""
+        if not user_ids:
+            return
+        uid_list = list(user_ids)
+        u_res = await db.execute(select(User.id).where(User.id.in_(uid_list)))
+        existing_uids = {row[0] for row in u_res.fetchall()}
+        missing = sorted(user_ids - existing_uids)
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Referenced user(s) not found: {', '.join(missing)}"
+            )
+
+        if group_id:
+            gm_res = await db.execute(
+                select(GroupMember.user_id).where(
+                    GroupMember.group_id == group_id,
+                    GroupMember.user_id.in_(uid_list),
+                )
+            )
+            member_uids = {row[0] for row in gm_res.fetchall()}
+            non_members = sorted(user_ids - member_uids)
+            if non_members:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"User(s) {', '.join(non_members)} are not members of group {group_id}"
+                )
+
     @staticmethod
     async def create_expense(
         db: AsyncSession,
@@ -221,10 +255,13 @@ class LedgerService:
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
 
-        # 5. Invariant Verification
+        # 5. Invariant Verification & Referenced User Validation
         total_owed = sum(s[1] for s in splits_to_insert)
         if total_owed != quantized_total:
             raise AssertionError(f"Split sum ({total_owed}) differs from total expense amount ({quantized_total})")
+
+        referenced_uids = {uid for uid, _ in payers_to_insert} | {uid for uid, _, _ in splits_to_insert}
+        await LedgerService._validate_referenced_users(db, referenced_uids, data.group_id)
 
         # 6. Persist Expense Entity
         expense_date = data.expense_date or datetime.now(timezone.utc).date()
@@ -470,6 +507,21 @@ class LedgerService:
 
             for uid, amt, share in new_splits:
                 db.add(ExpenseSplit(expense_id=expense.id, user_id=uid, owed_amount=amt, share_quantity=share))
+
+        referenced_uids = (
+            {p.user_id for p in (data.payers or [])}
+            | {uid for uid, _ in (new_payers if data.payers is not None else [])}
+            | {uid for uid, _, _ in (new_splits if (
+                data.splits is not None or
+                data.participant_ids is not None or
+                data.percentages is not None or
+                data.shares is not None or
+                data.adjustments is not None or
+                data.items is not None or
+                data.total_amount is not None
+            ) else [])}
+        )
+        await LedgerService._validate_referenced_users(db, referenced_uids, expense.group_id)
 
         expense.version += 1
         expense.updated_at = datetime.now(timezone.utc)

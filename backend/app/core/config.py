@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     # OAuth Credentials
-    GOOGLE_CLIENT_ID: Optional[str] = Field(default="34497581041-32g5m3c4oet10tbf1m6cr03m1eugqc50.apps.googleusercontent.com", validation_alias="GOOGLE_CLIENT_ID")
+    GOOGLE_CLIENT_ID: Optional[str] = Field(default="34497581041-m4kcf9orlm764lq0bh60l46rgjjamo1f.apps.googleusercontent.com", validation_alias="GOOGLE_CLIENT_ID")
     GOOGLE_CLIENT_SECRET: Optional[str] = Field(default=None, validation_alias="GOOGLE_CLIENT_SECRET")
 
     # Supabase Configuration

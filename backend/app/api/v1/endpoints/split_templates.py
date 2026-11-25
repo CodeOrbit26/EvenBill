@@ -17,14 +17,14 @@ from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.group import Group, GroupMember, GroupSplitTemplate
-from app.schemas.common import APIResponse
+from app.schemas.common import APIResponse, UUIDStr
 from app.services.entitlement_service import EntitlementService, PlanTier, FeatureKey, FeatureLockedException
 
 router = APIRouter(prefix="/groups/{group_id}/split-templates", tags=["Group Split Templates (Pro)"])
 
 
 class SplitAllocationItem(BaseModel):
-    user_id: str
+    user_id: UUIDStr
     value: float = Field(..., ge=0, description="Percent, share, or exact amount depending on split_type")
 
 

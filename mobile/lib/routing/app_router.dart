@@ -72,9 +72,6 @@ GoRouter createAppRouter({
           return path == AppRoutes.signIn ? null : AppRoutes.signIn;
 
         case AuthStatus.authenticated:
-          if (auth.user != null && !auth.user!.hasPassword && !auth.setupSkipped) {
-            return path == AppRoutes.completeSetup ? null : AppRoutes.completeSetup;
-          }
           if (isPublicAuthPath || isSplash || path == AppRoutes.completeSetup) {
             return AppRoutes.shell;
           }
@@ -145,7 +142,9 @@ GoRouter createAppRouter({
           final themeMode = getThemeMode != null
               ? getThemeMode()
               : ThemeMode.light;
+          final currentUserId = getAuthState?.call().user?.id;
           return AppNavigationShell(
+            key: ValueKey('shell_${currentUserId ?? 'anon'}'),
             currentThemeMode: themeMode,
             onThemeChanged: onThemeChanged ?? (_) {},
             onSignOut: () async {

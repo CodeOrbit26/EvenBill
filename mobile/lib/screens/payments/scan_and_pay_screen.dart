@@ -4,6 +4,7 @@ import '../../core/di/injection.dart';
 import '../../core/models/group_model.dart';
 import '../../core/models/expense_model.dart';
 import '../../core/models/user_model.dart';
+import '../../core/utils/identity_utils.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/widgets/buttons/primary_button.dart';
@@ -86,7 +87,7 @@ class _ScanAndPayScreenState extends State<ScanAndPayScreen> with SingleTickerPr
   Future<void> _loadInitialData() async {
     setState(() => _isLoading = true);
     try {
-      final user = await Injection.tokenStorage.getCachedUser();
+      final user = await resolveAuthenticatedUser();
       final groups = await Injection.groupRepository.listGroups();
       _currentUser = user;
       _groups = groups;
@@ -420,14 +421,13 @@ class _ScanAndPayScreenState extends State<ScanAndPayScreen> with SingleTickerPr
     setState(() => _isProcessingPayment = true);
 
     try {
-      final user = _currentUser ??
-          (await Injection.tokenStorage.getCachedUser()) ??
-          const UserModel(
-            id: 'usr_me',
-            email: 'me@evenbill.com',
-            fullName: 'You',
-            defaultCurrency: 'INR',
-          );
+      final user = _currentUser ?? await resolveAuthenticatedUser();
+      if (user == null || isPlaceholderUserId(user.id)) {
+        if (mounted) {
+          AppSnackbar.showError(context, 'Please sign in to record a payment.');
+        }
+        return;
+      }
 
       final expenseDescription = note.isNotEmpty
           ? note
@@ -685,7 +685,21 @@ class _ScanAndPayScreenState extends State<ScanAndPayScreen> with SingleTickerPr
       onConfirmed: (data) async {
         setState(() => _isLoading = true);
         try {
-          final user = _currentUser ?? await Injection.tokenStorage.getCachedUser();
+          final user = (_currentUser != null && !isPlaceholderUserId(_currentUser!.id))
+              ? _currentUser
+              : await resolveAuthenticatedUser();
+          if (user == null || isPlaceholderUserId(user.id)) {
+            if (mounted) {
+              setState(() => _isLoading = false);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Session identity could not be verified. Please sign in again.'),
+                ),
+              );
+            }
+            return;
+          }
+          _currentUser = user;
           final exp = await Injection.expenseRepository.createExpense(
             groupId: _selectedGroup?.id,
             description: data.merchant,
@@ -694,7 +708,7 @@ class _ScanAndPayScreenState extends State<ScanAndPayScreen> with SingleTickerPr
             splitType: 'EQUAL',
             payers: [
               PayerModel(
-                userId: user!.id,
+                userId: user.id,
                 fullName: user.fullName,
                 amountPaid: data.totalAmount,
               ),

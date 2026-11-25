@@ -7,6 +7,9 @@ import '../../core/widgets/feedback/app_snackbar.dart';
 import '../../core/di/injection.dart';
 import '../../core/models/user_model.dart';
 import '../../core/models/entitlement_model.dart';
+import '../../core/utils/identity_utils.dart';
+import '../../core/widgets/feedback/error_state_view.dart';
+import '../auth/complete_setup_modal.dart';
 import '../bank/bank_import_sheet.dart';
 
 class ProfileSettingsScreen extends StatefulWidget {
@@ -35,6 +38,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   UserModel? _user;
   EntitlementModel? _entitlement;
   bool _isLoading = true;
+  String? _loadError;
   bool _mfaEnabled = false;
   bool _pushNotifications = true;
   bool _emailDigests = true;
@@ -46,6 +50,10 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   }
 
   Future<void> _loadProfile() async {
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+    });
     try {
       final user = await Injection.authRepository.getMe();
       EntitlementModel? ent;
@@ -60,18 +68,21 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
           _isLoading = false;
         });
       }
-    } catch (_) {
+    } catch (e) {
       final cached = await Injection.authRepository.getCachedUser();
       if (mounted) {
-        setState(() {
-          _user = cached ??
-              const UserModel(
-                id: 'current_user',
-                email: 'user@evenbill.app',
-                fullName: 'EvenBill User',
-              );
-          _isLoading = false;
-        });
+        if (cached != null && !isPlaceholderUserId(cached.id)) {
+          setState(() {
+            _user = cached;
+            _isLoading = false;
+          });
+        } else {
+          setState(() {
+            _user = null;
+            _loadError = 'Unable to load your profile. Please check your connection and try again.';
+            _isLoading = false;
+          });
+        }
       }
     }
   }
@@ -276,7 +287,18 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
+          : _loadError != null && _user == null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24.0),
+                    child: ErrorStateView(
+                      title: 'Could Not Load Profile',
+                      message: _loadError!,
+                      onRetry: _loadProfile,
+                    ),
+                  ),
+                )
+              : ListView(
               padding: AppSpacing.screenPadding,
               children: [
                 // Profile Header Card
@@ -606,6 +628,24 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                 Card(
                   child: Column(
                     children: [
+                      if (_user != null && !_user!.hasPassword) ...[
+                        ListTile(
+                          leading: const Icon(Icons.lock_outline),
+                          title: const Text('Set Direct Login Password'),
+                          subtitle: const Text('Optional: add a password for email login alongside Google'),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () {
+                            final currentUser = _user;
+                            if (currentUser == null) return;
+                            showCompleteSetupModal(
+                              context,
+                              user: currentUser,
+                              onComplete: _loadProfile,
+                            );
+                          },
+                        ),
+                        const Divider(height: 1),
+                      ],
                       SwitchListTile(
                         secondary: const Icon(Icons.security_outlined),
                         title: const Text('Two-Factor Authentication (MFA)', style: TextStyle(fontWeight: FontWeight.w600)),

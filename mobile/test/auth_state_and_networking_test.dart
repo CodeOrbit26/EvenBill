@@ -11,17 +11,24 @@ import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState, Headers;
 import 'package:evenbill/core/models/user_model.dart';
 import 'package:evenbill/core/models/activity_model.dart';
+import 'package:evenbill/core/models/expense_model.dart';
+import 'package:evenbill/core/models/friend_model.dart';
+import 'package:evenbill/core/models/group_model.dart';
 import 'package:evenbill/core/network/api_client.dart';
 import 'package:evenbill/core/network/token_storage.dart';
 import 'package:evenbill/core/providers/auth_provider.dart';
 import 'package:evenbill/core/repositories/auth_repository.dart';
+import 'package:evenbill/core/repositories/expense_repository.dart';
+import 'package:evenbill/core/repositories/settlement_repository.dart';
 import 'package:evenbill/core/services/google_auth_service.dart';
 import 'package:evenbill/core/services/supabase_service.dart';
+import 'package:evenbill/core/utils/identity_utils.dart';
 import 'package:evenbill/core/di/injection.dart';
 import 'package:evenbill/routing/app_router.dart';
 import 'package:evenbill/routing/route_names.dart';
 import 'package:evenbill/screens/auth/registration_screen.dart';
 import 'package:evenbill/screens/auth/sign_in_screen.dart';
+import 'package:evenbill/screens/expenses/add_edit_expense_screen.dart';
 import 'package:evenbill/screens/overview/overview_screen.dart';
 import 'mocks/mock_repositories.dart';
 
@@ -903,7 +910,607 @@ void main() {
         GoogleSignInPlatform.instance = originalPlatform;
       }
     });
+
+    test('Test 26: ExpenseRepository & SettlementRepository reject placeholder and malformed UUIDs client-side', () async {
+      int networkCalls = 0;
+      final dio = Dio(BaseOptions(baseUrl: 'http://test.local'));
+      dio.httpClientAdapter = _MockHttpAdapter((options) {
+        networkCalls++;
+        return ResponseBody.fromString('{"detail": "Should not reach network"}', 500);
+      });
+
+      final apiClient = ApiClient(customDio: dio, customTokenStorage: testTokenStorage);
+      final expenseRepo = ExpenseRepository(apiClient: apiClient);
+      final settlementRepo = SettlementRepository(apiClient: apiClient);
+      const validUuid = '11111111-1111-4111-8111-111111111111';
+
+      expect(isPlaceholderUserId('current_user'), isTrue);
+      expect(isPlaceholderUserId('usr_me'), isTrue);
+      expect(isValidUuid('current_user'), isFalse);
+      expect(isValidUuid(validUuid), isTrue);
+
+      final invalidExpenseAttempts = <Future<ExpenseModel> Function()>[
+        () => expenseRepo.createExpense(
+              description: 'Bad payer',
+              totalAmount: 50,
+              payers: const [PayerModel(userId: 'current_user', fullName: 'Me', amountPaid: 50)],
+              participantIds: const [validUuid],
+            ),
+        () => expenseRepo.createExpense(
+              description: 'Bad participant',
+              totalAmount: 50,
+              payers: const [PayerModel(userId: validUuid, fullName: 'Me', amountPaid: 50)],
+              participantIds: const ['usr_me'],
+            ),
+        () => expenseRepo.createExpense(
+              description: 'Bad percentages key',
+              totalAmount: 50,
+              splitType: 'PERCENTAGE',
+              payers: const [PayerModel(userId: validUuid, fullName: 'Me', amountPaid: 50)],
+              percentages: const {'current_user': 100.0},
+            ),
+        () => expenseRepo.createExpense(
+              description: 'Bad shares key',
+              totalAmount: 50,
+              splitType: 'SHARES',
+              payers: const [PayerModel(userId: validUuid, fullName: 'Me', amountPaid: 50)],
+              shares: const {'not-a-uuid': 1.0},
+            ),
+        () => expenseRepo.createExpense(
+              description: 'Bad adjustments key',
+              totalAmount: 50,
+              splitType: 'ADJUSTMENT',
+              payers: const [PayerModel(userId: validUuid, fullName: 'Me', amountPaid: 50)],
+              adjustments: const {'usr_current': 0.0},
+            ),
+      ];
+
+      for (final attempt in invalidExpenseAttempts) {
+        await expectLater(
+          attempt,
+          throwsA(predicate((e) => e is ApiException && e.statusCode == 422)),
+        );
+      }
+
+      await expectLater(
+        () => settlementRepo.recordSettlement(
+          groupId: validUuid,
+          payerId: 'current_user',
+          recipientId: validUuid,
+          amount: 25,
+        ),
+        throwsA(predicate((e) => e is ApiException && e.statusCode == 422)),
+      );
+      await expectLater(
+        () => settlementRepo.recordSettlement(
+          groupId: validUuid,
+          payerId: validUuid,
+          recipientId: 'usr_me',
+          amount: 25,
+        ),
+        throwsA(predicate((e) => e is ApiException && e.statusCode == 422)),
+      );
+
+      expect(networkCalls, 0);
+    });
+
+    testWidgets('Test 27: AddEditExpenseScreen uses authenticated user UUID rather than current_user for group and direct expenses', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      const canonicalUuid = '11111111-1111-4111-8111-111111111111';
+      const member2Uuid = '22222222-2222-4222-8222-222222222222';
+      const member3Uuid = '33333333-3333-4333-8333-333333333333';
+      const groupUuid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+      // Seed stale placeholder user in storage to confirm resolveAuthenticatedUser refreshes from /auth/me
+      await testTokenStorage.saveUser(const UserModel(
+        id: 'current_user',
+        email: 'alex@evenbill.app',
+        fullName: 'Stale User',
+      ));
+
+      final mockAuth = MockAuthRepository(tokenStorage: testTokenStorage)
+        ..currentUser = const UserModel(
+          id: canonicalUuid,
+          email: 'alex@evenbill.app',
+          fullName: 'Alex Mercer',
+        );
+      final targetGroup = const GroupModel(
+        id: groupUuid,
+        name: 'Goa Crew',
+        groupType: 'TRIP',
+        baseCurrency: 'USD',
+        inviteCode: 'GOACREW1',
+        createdBy: canonicalUuid,
+        memberCount: 3,
+      );
+      final mockGroup = _FixedGroupDetailRepository(
+        groupList: [targetGroup],
+        detail: GroupDetailModel(
+          group: targetGroup,
+          members: const [
+            GroupMemberModel(id: 'gm1', userId: canonicalUuid, fullName: 'Alex Mercer', email: 'alex@evenbill.app', role: 'ADMIN'),
+            GroupMemberModel(id: 'gm2', userId: member2Uuid, fullName: 'Maya Rao', email: 'maya@evenbill.app', role: 'MEMBER'),
+            GroupMemberModel(id: 'gm3', userId: member3Uuid, fullName: 'Rohan Nair', email: 'rohan@evenbill.app', role: 'MEMBER'),
+          ],
+          netBalances: const [],
+          simplifiedDebts: const [],
+          bilateralDebts: const [],
+        ),
+      );
+      final mockFriend = MockFriendRepository()
+        ..friends.clear()
+        ..friends.add(
+          const FriendModel(id: member2Uuid, name: 'Maya Rao', email: 'maya@evenbill.app', netBalance: 0.0),
+        );
+      final spyExpense = _IdentitySpyExpenseRepository();
+
+      Injection.setMockRepositories(
+        tokens: testTokenStorage,
+        auth: mockAuth,
+        group: mockGroup,
+        friend: mockFriend,
+        expense: spyExpense,
+        settlement: MockSettlementRepository(),
+        activity: MockActivityRepository(),
+        subscription: MockSubscriptionRepository(),
+      );
+
+      // 1) Multi-member group expense
+      bool groupSaved = false;
+      await tester.pumpWidget(ProviderScope(
+        child: MaterialApp(
+          home: AddEditExpenseScreen(
+            preselectedGroupId: groupUuid,
+            onSaved: () => groupSaved = true,
+            onBack: () {},
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).at(0), '90.00');
+      await tester.enterText(find.byType(TextField).at(1), 'Villa Stay');
+      await tester.pump();
+      await tester.ensureVisible(find.text('Save Expense'));
+      await tester.tap(find.text('Save Expense'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(groupSaved, isTrue);
+      expect(spyExpense.lastGroupId, groupUuid);
+      expect(spyExpense.lastPayers, isNotNull);
+      expect(spyExpense.lastPayers!.single.userId, canonicalUuid);
+      expect(isPlaceholderUserId(spyExpense.lastPayers!.single.userId), isFalse);
+      expect(spyExpense.lastParticipantIds, containsAll(<String>[canonicalUuid, member2Uuid, member3Uuid]));
+
+      // 2) Direct / personal (non-group) expense
+      mockGroup.groupList.clear();
+      bool directSaved = false;
+      await tester.pumpWidget(ProviderScope(
+        key: const ValueKey('direct_scope'),
+        child: MaterialApp(
+          key: const ValueKey('direct_app'),
+          home: AddEditExpenseScreen(
+            key: const ValueKey('direct_expense_screen'),
+            onSaved: () => directSaved = true,
+            onBack: () {},
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).at(0), '24.50');
+      await tester.enterText(find.byType(TextField).at(1), 'Airport Taxi');
+      await tester.pump();
+      await tester.ensureVisible(find.text('Save Expense'));
+      await tester.tap(find.text('Save Expense'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(directSaved, isTrue);
+      expect(spyExpense.lastPayers!.single.userId, canonicalUuid);
+      expect(isPlaceholderUserId(spyExpense.lastPayers!.single.userId), isFalse);
+    });
+
+    test('Test 28a: Second device Google login with fresh storage authenticates canonical user and never falls back to offline user', () async {
+      const canonicalUuid = '11111111-1111-4111-8111-111111111111';
+      final fakeSupabaseHttp = _FakeSupabaseHttpClient((request) async {
+        if (request.url.path == '/auth/v1/token' &&
+            request.url.queryParameters['grant_type'] == 'id_token') {
+          return http.Response(
+            jsonEncode({
+              'access_token': 'sb_phone2_jwt',
+              'token_type': 'bearer',
+              'expires_in': 3600,
+              'refresh_token': 'sb_phone2_refresh',
+              'user': {
+                'id': canonicalUuid,
+                'aud': 'authenticated',
+                'email': 'phone2@evenbill.app',
+                'created_at': '2026-11-25T10:00:00Z',
+                'email_confirmed_at': '2026-11-25T10:00:00Z',
+                'app_metadata': {'provider': 'google', 'providers': ['google']},
+                'user_metadata': {'full_name': 'Cross Device User'},
+              },
+            }),
+            200,
+            headers: const {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 200, headers: const {'content-type': 'application/json'});
+      });
+
+      final testSupabaseClient = SupabaseClient(
+        'https://example.supabase.co',
+        'test-publishable-key',
+        httpClient: fakeSupabaseHttp,
+        authOptions: const AuthClientOptions(autoRefreshToken: false),
+      );
+      SupabaseService.setClientForTesting(testSupabaseClient);
+
+      final dio = Dio(BaseOptions(baseUrl: 'http://test.local'));
+      dio.httpClientAdapter = _MockHttpAdapter((options) {
+        if (options.path.contains('/auth/me')) {
+          return ResponseBody.fromString(
+            jsonEncode({
+              'data': {
+                'id': canonicalUuid,
+                'email': 'phone2@evenbill.app',
+                'full_name': 'Cross Device User',
+                'default_currency': 'USD',
+                'is_active': true,
+                'is_verified': true,
+                'has_password': false,
+                'is_pro': false,
+                'created_at': '2026-11-25T10:00:00Z',
+              },
+            }),
+            200,
+            headers: {Headers.contentTypeHeader: [Headers.jsonContentType]},
+          );
+        }
+        return ResponseBody.fromString('{"detail": "Unexpected path"}', 404);
+      });
+
+      final apiClient = ApiClient(customDio: dio, customTokenStorage: testTokenStorage);
+      final authRepo = AuthRepository(apiClient: apiClient, tokenStorage: testTokenStorage);
+      Injection.setMockRepositories(tokens: testTokenStorage, auth: authRepo);
+
+      final container = ProviderContainer();
+      try {
+        await container.read(authProvider.notifier).loginWithOAuth(
+              provider: 'google',
+              idToken: 'fake_google_id_token',
+            );
+
+        final authState = container.read(authProvider);
+        expect(authState.status, AuthStatus.authenticated);
+        expect(authState.user?.id, canonicalUuid);
+        expect(authState.user?.hasPassword, isFalse);
+        expect((await testTokenStorage.getCachedUser())?.id, canonicalUuid);
+      } finally {
+        container.dispose();
+        await testSupabaseClient.dispose();
+        SupabaseService.resetForTesting();
+      }
+    });
+
+    testWidgets('Test 28b: Second device OAuth user lands directly on /shell, restores groups, and surfaces fetch errors cleanly', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      const canonicalUuid = '11111111-1111-4111-8111-111111111111';
+      final oauthUser = const UserModel(
+        id: canonicalUuid,
+        email: 'phone2@evenbill.app',
+        fullName: 'Cross Device User',
+        hasPassword: false,
+      );
+      final mockAuth = MockAuthRepository(tokenStorage: testTokenStorage)
+        ..currentUser = oauthUser
+        ..authenticated = true;
+      final restoredGroup = const GroupModel(
+        id: 'gggggggg-gggg-4ggg-8ggg-gggggggggggg',
+        name: 'Trip to Goa',
+        groupType: 'TRIP',
+        baseCurrency: 'USD',
+        inviteCode: 'GOA999',
+        createdBy: canonicalUuid,
+        memberCount: 3,
+      );
+
+      Injection.setMockRepositories(
+        tokens: testTokenStorage,
+        auth: mockAuth,
+        group: _FixedGroupDetailRepository(
+          groupList: [restoredGroup],
+          detail: GroupDetailModel(
+            group: restoredGroup,
+            members: const [],
+            netBalances: const [],
+            simplifiedDebts: const [],
+            bilateralDebts: const [],
+          ),
+        ),
+        expense: MockExpenseRepository(),
+        settlement: MockSettlementRepository(),
+        friend: MockFriendRepository()..friends.clear(),
+        activity: MockActivityRepository(),
+        subscription: MockSubscriptionRepository(),
+        pro: MockProRepository(),
+      );
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await container.read(authProvider.notifier).loginWithOAuth(
+            provider: 'google',
+            idToken: 'fake_google_id_token',
+          );
+
+      // Returning OAuth user lands directly on /shell rather than forced CompleteSetupScreen
+      final router = createAppRouter(
+        initialLocation: AppRoutes.signIn,
+        getAuthState: () => container.read(authProvider),
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp.router(routerConfig: router),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(router.routeInformationProvider.value.uri.path, AppRoutes.shell);
+      expect(find.text('Trip to Goa'), findsOneWidget);
+      expect(find.text('No Groups Yet'), findsNothing);
+
+      // When groups fetch fails, OverviewScreen must surface an error rather than "No Groups Yet"
+      Injection.setMockRepositories(
+        tokens: testTokenStorage,
+        auth: mockAuth,
+        group: _ThrowingGroupRepository(),
+        expense: MockExpenseRepository(),
+        settlement: MockSettlementRepository(),
+        friend: MockFriendRepository()..friends.clear(),
+        activity: MockActivityRepository(),
+        subscription: MockSubscriptionRepository(),
+        pro: MockProRepository(),
+      );
+      await tester.pumpWidget(MaterialApp(
+        key: const ValueKey('overview_error_app'),
+        home: OverviewScreen(
+          onExpenseTap: (_) {},
+          onSettleUpTap: () {},
+          onScanReceiptTap: () {},
+          onAddExpenseTap: () {},
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Try Again'), findsOneWidget);
+      expect(find.text('No Groups Yet'), findsNothing);
+    });
+
+    test('Test 29: Re-login after app restart reconciles cached identity with Supabase session and avoids fake login on /auth/me failure', () async {
+      const staleUuid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const activeUuid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+      final fakeSupabaseHttp = _FakeSupabaseHttpClient((request) async {
+        if (request.url.path == '/auth/v1/token' &&
+            request.url.queryParameters['grant_type'] == 'id_token') {
+          return http.Response(
+            jsonEncode({
+              'access_token': 'sb_restart_jwt',
+              'token_type': 'bearer',
+              'expires_in': 3600,
+              'refresh_token': 'sb_restart_refresh',
+              'user': {
+                'id': activeUuid,
+                'aud': 'authenticated',
+                'email': 'active@evenbill.app',
+                'created_at': '2026-11-25T10:00:00Z',
+                'email_confirmed_at': '2026-11-25T10:00:00Z',
+                'app_metadata': {'provider': 'google', 'providers': ['google']},
+                'user_metadata': {'full_name': 'Active Account'},
+              },
+            }),
+            200,
+            headers: const {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 200, headers: const {'content-type': 'application/json'});
+      });
+
+      final testSupabaseClient = SupabaseClient(
+        'https://example.supabase.co',
+        'test-publishable-key',
+        httpClient: fakeSupabaseHttp,
+        authOptions: const AuthClientOptions(autoRefreshToken: false),
+      );
+      SupabaseService.setClientForTesting(testSupabaseClient);
+
+      bool failMe = true;
+      final dio = Dio(BaseOptions(baseUrl: 'http://test.local'));
+      dio.httpClientAdapter = _MockHttpAdapter((options) {
+        if (options.path.contains('/auth/me')) {
+          if (failMe) {
+            return ResponseBody.fromString('{"detail": "Backend restarting"}', 503);
+          }
+          return ResponseBody.fromString(
+            jsonEncode({
+              'data': {
+                'id': activeUuid,
+                'email': 'active@evenbill.app',
+                'full_name': 'Active Account',
+                'default_currency': 'USD',
+                'is_active': true,
+                'is_verified': true,
+                'has_password': false,
+                'is_pro': false,
+                'created_at': '2026-11-25T10:00:00Z',
+              },
+            }),
+            200,
+            headers: {Headers.contentTypeHeader: [Headers.jsonContentType]},
+          );
+        }
+        return ResponseBody.fromString('{"detail": "Unexpected"}', 404);
+      });
+
+      final apiClient = ApiClient(customDio: dio, customTokenStorage: testTokenStorage);
+      final authRepo = AuthRepository(apiClient: apiClient, tokenStorage: testTokenStorage);
+      Injection.setMockRepositories(tokens: testTokenStorage, auth: authRepo);
+
+      try {
+        // 1) Initial Google OAuth login with /auth/me down must throw & clear tokens instead of fabricating fake user
+        await expectLater(
+          () => authRepo.loginWithOAuth(provider: 'google', idToken: 'google_id_tok'),
+          throwsA(isA<ApiException>()),
+        );
+        expect(await testTokenStorage.getAccessToken(), isNull);
+        expect(await testTokenStorage.getCachedUser(), isNull);
+
+        // 2) Establish active Supabase session for activeUuid while cache holds staleUuid (account switch / restart)
+        await testSupabaseClient.auth.signInWithIdToken(
+          provider: OAuthProvider.google,
+          idToken: 'google_id_tok',
+        );
+        await testTokenStorage.saveTokens(
+          accessToken: 'sb_restart_jwt',
+          refreshToken: 'sb_restart_refresh',
+        );
+        await testTokenStorage.saveUser(const UserModel(
+          id: staleUuid,
+          email: 'stale@evenbill.app',
+          fullName: 'Stale Cache',
+        ));
+
+        // 2a) Offline restoreSession refuses mismatched cached user (staleUuid != activeUuid)
+        final containerOffline = ProviderContainer();
+        addTearDown(containerOffline.dispose);
+        await containerOffline.read(authProvider.notifier).restoreSession();
+        expect(containerOffline.read(authProvider).status, AuthStatus.unauthenticated);
+        expect(await testTokenStorage.getCachedUser(), isNull);
+
+        // 2b) Re-seed stale cache + restoreSession when /auth/me succeeds -> reconciles to activeUuid
+        failMe = false;
+        await testTokenStorage.saveTokens(
+          accessToken: 'sb_restart_jwt',
+          refreshToken: 'sb_restart_refresh',
+        );
+        await testTokenStorage.saveUser(const UserModel(
+          id: staleUuid,
+          email: 'stale@evenbill.app',
+          fullName: 'Stale Cache',
+        ));
+        final containerOnline = ProviderContainer();
+        addTearDown(containerOnline.dispose);
+        await containerOnline.read(authProvider.notifier).restoreSession();
+        expect(containerOnline.read(authProvider).status, AuthStatus.authenticated);
+        expect(containerOnline.read(authProvider).user?.id, activeUuid);
+        expect((await testTokenStorage.getCachedUser())?.id, activeUuid);
+      } finally {
+        await testSupabaseClient.dispose();
+        SupabaseService.resetForTesting();
+      }
+    });
   });
+}
+
+class _FixedGroupDetailRepository extends MockGroupRepository {
+  final List<GroupModel> groupList;
+  final GroupDetailModel detail;
+
+  _FixedGroupDetailRepository({required this.groupList, required this.detail});
+
+  @override
+  Future<List<GroupModel>> listGroups() async => List<GroupModel>.from(groupList);
+
+  @override
+  Future<GroupDetailModel> getGroupDetails(String groupId) async => detail;
+}
+
+class _ThrowingGroupRepository extends MockGroupRepository {
+  @override
+  Future<List<GroupModel>> listGroups() async {
+    throw ApiException('Backend unavailable', statusCode: 500);
+  }
+}
+
+class _IdentitySpyExpenseRepository extends MockExpenseRepository {
+  String? lastGroupId;
+  String? lastDescription;
+  List<PayerModel>? lastPayers;
+  List<String>? lastParticipantIds;
+
+  @override
+  Future<ExpenseModel> createExpense({
+    String? idempotencyKey,
+    String? groupId,
+    required String description,
+    required double totalAmount,
+    String currency = 'USD',
+    String splitType = 'EQUAL',
+    String category = 'GENERAL',
+    DateTime? expenseDate,
+    String? notes,
+    List<PayerModel>? payers,
+    List<String>? participantIds,
+    List<SplitModel>? splits,
+    Map<String, double>? percentages,
+    Map<String, double>? shares,
+    Map<String, double>? adjustments,
+    List<ItemizedItemInput>? items,
+    double tax = 0.0,
+    double tip = 0.0,
+    double fee = 0.0,
+    double discount = 0.0,
+    String transactionType = 'EXPENSE',
+    String? originalExpenseId,
+    double? exchangeRate,
+    String? exchangeRateSource,
+  }) async {
+    lastGroupId = groupId;
+    lastDescription = description;
+    lastPayers = payers;
+    lastParticipantIds = participantIds;
+    return super.createExpense(
+      idempotencyKey: idempotencyKey,
+      groupId: groupId,
+      description: description,
+      totalAmount: totalAmount,
+      currency: currency,
+      splitType: splitType,
+      category: category,
+      expenseDate: expenseDate,
+      notes: notes,
+      payers: payers,
+      participantIds: participantIds,
+      splits: splits,
+      percentages: percentages,
+      shares: shares,
+      adjustments: adjustments,
+      items: items,
+      tax: tax,
+      tip: tip,
+      fee: fee,
+      discount: discount,
+      transactionType: transactionType,
+      originalExpenseId: originalExpenseId,
+      exchangeRate: exchangeRate,
+      exchangeRateSource: exchangeRateSource,
+    );
+  }
 }
 
 class _FakeGoogleSignInPlatform extends GoogleSignInPlatform {

@@ -163,6 +163,10 @@ class AuthNotifier extends Notifier<AuthState> {
         }
       }
       if (currentSession != null) {
+        final existingCached = await _tokenStorage.getCachedUser();
+        if (existingCached != null && existingCached.id != currentSession.user.id) {
+          await _tokenStorage.clearAll();
+        }
         await _tokenStorage.saveTokens(
           accessToken: currentSession.accessToken,
           refreshToken: currentSession.refreshToken ?? '',
@@ -233,11 +237,13 @@ class AuthNotifier extends Notifier<AuthState> {
       }
 
       if (e is ApiException && e.isConnectionError) {
-        // Offline or connection failure: check if cached session exists
+        // Offline or connection failure: allow cached session ONLY if it matches active Supabase sub (when present)
         final cachedUser = await _tokenStorage.getCachedUser();
+        final activeSbId = SupabaseService.client?.auth.currentUser?.id;
+        final matchesActiveUser = cachedUser != null &&
+            (activeSbId == null || cachedUser.id == activeSbId);
         if (ref.mounted && epoch == _authEpoch) {
-          if (cachedUser != null) {
-            // Allow offline session restoration
+          if (matchesActiveUser) {
             state = AuthState.authenticated(cachedUser);
           } else {
             state = AuthState.error(e.message);
@@ -386,9 +392,11 @@ class AuthNotifier extends Notifier<AuthState> {
   }
 
   /// Skips direct password setup for OAuth users who choose to set it later
-  void skipSetup() {
-    if (ref.mounted && state.user != null) {
-      state = AuthState.authenticated(state.user!, setupSkipped: true);
+  Future<void> skipSetup() async {
+    final activeUser = state.user;
+    if (ref.mounted && activeUser != null) {
+      await _tokenStorage.saveSetupSkipped(activeUser.id, true);
+      state = AuthState.authenticated(activeUser, setupSkipped: true);
     }
   }
 
@@ -457,7 +465,9 @@ class AuthRouterListenable extends ChangeNotifier {
 
   AuthRouterListenable(this._ref) {
     _ref.listen<AuthState>(authProvider, (previous, next) {
-      if (previous?.status != next.status) {
+      if (previous?.status != next.status ||
+          previous?.user?.id != next.user?.id ||
+          previous?.setupSkipped != next.setupSkipped) {
         notifyListeners();
       }
     });

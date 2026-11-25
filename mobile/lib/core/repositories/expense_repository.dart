@@ -2,12 +2,69 @@ import 'package:uuid/uuid.dart';
 import '../network/api_client.dart';
 import '../models/expense_model.dart';
 import '../constants/api_constants.dart';
+import '../utils/identity_utils.dart';
 
 class ExpenseRepository {
   final ApiClient apiClient;
   final _uuid = const Uuid();
 
   ExpenseRepository({required this.apiClient});
+
+  void _validatePayloadUuids({
+    String? groupId,
+    String? originalExpenseId,
+    List<PayerModel>? payers,
+    List<String>? participantIds,
+    List<SplitModel>? splits,
+    Map<String, double>? percentages,
+    Map<String, double>? shares,
+    Map<String, double>? adjustments,
+    List<ItemizedItemInput>? items,
+  }) {
+    if (groupId != null) {
+      ensureValidBackendUuid(groupId, fieldName: 'group_id');
+    }
+    if (originalExpenseId != null) {
+      ensureValidBackendUuid(originalExpenseId, fieldName: 'original_expense_id');
+    }
+    if (payers != null) {
+      for (int i = 0; i < payers.length; i++) {
+        ensureValidBackendUuid(payers[i].userId, fieldName: 'payers[$i].user_id');
+      }
+    }
+    if (participantIds != null) {
+      for (int i = 0; i < participantIds.length; i++) {
+        ensureValidBackendUuid(participantIds[i], fieldName: 'participant_ids[$i]');
+      }
+    }
+    if (splits != null) {
+      for (int i = 0; i < splits.length; i++) {
+        ensureValidBackendUuid(splits[i].userId, fieldName: 'splits[$i].user_id');
+      }
+    }
+    if (percentages != null) {
+      for (final uid in percentages.keys) {
+        ensureValidBackendUuid(uid, fieldName: 'percentages.user_id');
+      }
+    }
+    if (shares != null) {
+      for (final uid in shares.keys) {
+        ensureValidBackendUuid(uid, fieldName: 'shares.user_id');
+      }
+    }
+    if (adjustments != null) {
+      for (final uid in adjustments.keys) {
+        ensureValidBackendUuid(uid, fieldName: 'adjustments.user_id');
+      }
+    }
+    if (items != null) {
+      for (int i = 0; i < items.length; i++) {
+        for (final uid in items[i].participantIds) {
+          ensureValidBackendUuid(uid, fieldName: 'items[$i].participant_ids');
+        }
+      }
+    }
+  }
 
   Future<ExpenseModel> createExpense({
     String? idempotencyKey,
@@ -35,6 +92,19 @@ class ExpenseRepository {
     double? exchangeRate,
     String? exchangeRateSource,
   }) async {
+    // Validate client-supplied UUIDs before submission so placeholder IDs never hit the API
+    _validatePayloadUuids(
+      groupId: groupId,
+      originalExpenseId: originalExpenseId,
+      payers: payers,
+      participantIds: participantIds,
+      splits: splits,
+      percentages: percentages,
+      shares: shares,
+      adjustments: adjustments,
+      items: items,
+    );
+
     // Generate idempotency key if not supplied to prevent duplicate submissions on network retries
     final key = idempotencyKey ?? _uuid.v4();
 
@@ -105,6 +175,16 @@ class ExpenseRepository {
     double? fee,
     double? discount,
   }) async {
+    _validatePayloadUuids(
+      payers: payers,
+      participantIds: participantIds,
+      splits: splits,
+      percentages: percentages,
+      shares: shares,
+      adjustments: adjustments,
+      items: items,
+    );
+
     final data = <String, dynamic>{};
     if (description != null) data['description'] = description.trim();
     if (totalAmount != null) data['total_amount'] = totalAmount;
