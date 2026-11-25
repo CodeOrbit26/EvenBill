@@ -6,12 +6,14 @@ import '../config/app_config.dart';
 /// Centralized service managing the lifecycle and connectivity of the Supabase Client
 class SupabaseService {
   static bool _initialized = false;
+  static SupabaseClient? _testClientOverride;
 
   /// Whether Supabase SDK has been successfully initialized
-  static bool get isInitialized => _initialized;
+  static bool get isInitialized => _initialized || _testClientOverride != null;
 
   /// Safe accessor for the SupabaseClient instance (null if uninitialized)
   static SupabaseClient? get client {
+    if (_testClientOverride != null) return _testClientOverride;
     if (!_initialized) return null;
     try {
       return Supabase.instance.client;
@@ -67,5 +69,12 @@ class SupabaseService {
   @visibleForTesting
   static void resetForTesting() {
     _initialized = false;
+    _testClientOverride = null;
+  }
+
+  /// Inject a mock/local HTTP SupabaseClient instance in automated tests
+  @visibleForTesting
+  static void setClientForTesting(SupabaseClient? client) {
+    _testClientOverride = client;
   }
 }

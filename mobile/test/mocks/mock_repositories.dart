@@ -36,6 +36,8 @@ class MockAuthRepository extends AuthRepository {
   bool throwEmailNotConfirmedOnLogin = false;
   String? lastPasswordResetEmail;
   bool failPasswordReset = false;
+  String? lastOAuthNonce;
+  String? lastOAuthIdToken;
 
   MockAuthRepository({TokenStorage? tokenStorage})
       : super(apiClient: ApiClient(), tokenStorage: tokenStorage ?? InMemoryTokenStorage());
@@ -81,12 +83,15 @@ class MockAuthRepository extends AuthRepository {
   Future<UserModel> loginWithOAuth({
     required String provider,
     String? idToken,
+    String? nonce,
     String? email,
     String? fullName,
     String? avatarUrl,
     String? phoneNumber,
     String? password,
   }) async {
+    lastOAuthIdToken = idToken;
+    lastOAuthNonce = nonce;
     authenticated = true;
     currentUser = UserModel(
       id: 'oauth_user_1',

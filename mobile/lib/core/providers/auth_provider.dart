@@ -322,6 +322,7 @@ class AuthNotifier extends Notifier<AuthState> {
   Future<UserModel> loginWithOAuth({
     required String provider,
     String? idToken,
+    String? nonce,
     String? email,
     String? fullName,
     String? avatarUrl,
@@ -333,6 +334,7 @@ class AuthNotifier extends Notifier<AuthState> {
       final user = await _authRepository.loginWithOAuth(
         provider: provider,
         idToken: idToken,
+        nonce: nonce,
         email: email,
         fullName: fullName,
         avatarUrl: avatarUrl,

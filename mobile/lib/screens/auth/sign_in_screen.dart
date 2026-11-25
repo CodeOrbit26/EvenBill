@@ -151,6 +151,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
         user = await ref.read(authProvider.notifier).loginWithOAuth(
               provider: 'google',
               idToken: googleResult.idToken,
+              nonce: googleResult.nonce,
               email: googleResult.email,
               fullName: googleResult.fullName,
               avatarUrl: googleResult.avatarUrl,
@@ -160,6 +161,7 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
           user = await Injection.authRepository.loginWithOAuth(
             provider: 'google',
             idToken: googleResult.idToken,
+            nonce: googleResult.nonce,
             email: googleResult.email,
             fullName: googleResult.fullName,
             avatarUrl: googleResult.avatarUrl,

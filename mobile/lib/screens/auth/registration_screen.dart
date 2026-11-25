@@ -157,6 +157,7 @@ class _RegistrationScreenState extends ConsumerState<RegistrationScreen> {
             .loginWithOAuth(
               provider: 'google',
               idToken: googleResult.idToken,
+              nonce: googleResult.nonce,
               email: googleResult.email,
               fullName: googleResult.fullName,
               avatarUrl: googleResult.avatarUrl,
@@ -166,6 +167,7 @@ class _RegistrationScreenState extends ConsumerState<RegistrationScreen> {
           user = await Injection.authRepository.loginWithOAuth(
             provider: 'google',
             idToken: googleResult.idToken,
+            nonce: googleResult.nonce,
             email: googleResult.email,
             fullName: googleResult.fullName,
             avatarUrl: googleResult.avatarUrl,

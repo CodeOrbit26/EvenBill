@@ -1,15 +1,22 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:google_sign_in_platform_interface/google_sign_in_platform_interface.dart';
+import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState, Headers;
 import 'package:evenbill/core/models/user_model.dart';
 import 'package:evenbill/core/models/activity_model.dart';
 import 'package:evenbill/core/network/api_client.dart';
 import 'package:evenbill/core/network/token_storage.dart';
 import 'package:evenbill/core/providers/auth_provider.dart';
 import 'package:evenbill/core/repositories/auth_repository.dart';
+import 'package:evenbill/core/services/google_auth_service.dart';
+import 'package:evenbill/core/services/supabase_service.dart';
 import 'package:evenbill/core/di/injection.dart';
 import 'package:evenbill/routing/app_router.dart';
 import 'package:evenbill/routing/route_names.dart';
@@ -678,7 +685,308 @@ void main() {
         container.dispose();
       }
     });
+
+    test('Test 23: GoogleAuthService generates distinct high-entropy raw nonces and standard SHA-256 hex digests', () {
+      final nonces = <String>{};
+      for (int i = 0; i < 20; i++) {
+        final raw = GoogleAuthService.generateRawNonce();
+        expect(raw.length, greaterThanOrEqualTo(43));
+        expect(raw.contains('='), isFalse);
+        expect(RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(raw), isTrue);
+        nonces.add(raw);
+
+        final expectedDigest = sha256.convert(utf8.encode(raw)).toString();
+        expect(GoogleAuthService.hashNonce(raw), expectedDigest);
+        expect(expectedDigest.length, 64);
+        expect(expectedDigest, isNot(equals(raw)));
+      }
+      expect(nonces.length, 20);
+    });
+
+    test('Test 24: GoogleAuthService.signIn sends fresh SHA-256 nonce per attempt, returns raw nonce, and handles cancel safely', () async {
+      final originalPlatform = GoogleSignInPlatform.instance;
+      final fakePlatform = _FakeGoogleSignInPlatform();
+      GoogleSignInPlatform.instance = fakePlatform;
+      GoogleAuthService.resetForTesting();
+
+      try {
+        // Attempt 1
+        final res1 = await GoogleAuthService.signIn();
+        expect(res1, isNotNull);
+        expect(res1!.idToken, 'google_id_token_1');
+        expect(res1.nonce, isNotNull);
+        expect(fakePlatform.recordedInitParams.length, 1);
+        expect(
+          fakePlatform.recordedInitParams[0].serverClientId,
+          GoogleAuthService.serverClientId,
+        );
+        expect(
+          fakePlatform.recordedInitParams[0].nonce,
+          GoogleAuthService.hashNonce(res1.nonce!),
+        );
+
+        // User cancels Attempt 2
+        fakePlatform.nextError = const GoogleSignInException(
+          code: GoogleSignInExceptionCode.canceled,
+          description: 'User dismissed credential sheet',
+        );
+        final canceledRes = await GoogleAuthService.signIn();
+        expect(canceledRes, isNull);
+        expect(fakePlatform.recordedInitParams.length, 2);
+        expect(
+          fakePlatform.recordedInitParams[1].nonce,
+          isNot(equals(fakePlatform.recordedInitParams[0].nonce)),
+        );
+
+        // Attempt 3 succeeds with a brand-new nonce
+        final res3 = await GoogleAuthService.signIn();
+        expect(res3, isNotNull);
+        expect(res3!.nonce, isNotNull);
+        expect(res3.nonce, isNot(equals(res1.nonce)));
+        expect(fakePlatform.recordedInitParams.length, 3);
+        expect(
+          fakePlatform.recordedInitParams[2].nonce,
+          GoogleAuthService.hashNonce(res3.nonce!),
+        );
+      } finally {
+        GoogleAuthService.resetForTesting();
+        GoogleSignInPlatform.instance = originalPlatform;
+      }
+    });
+
+    test('Test 25: End-to-end Google OAuth nonce passes hashed digest to SDK and matching raw nonce to Supabase signInWithIdToken', () async {
+      final originalPlatform = GoogleSignInPlatform.instance;
+      final fakePlatform = _FakeGoogleSignInPlatform();
+      GoogleSignInPlatform.instance = fakePlatform;
+      GoogleAuthService.resetForTesting();
+
+      final recordedTokenRequests = <Map<String, dynamic>>[];
+      bool simulateNonceMismatch = false;
+
+      final fakeSupabaseHttp = _FakeSupabaseHttpClient((request) async {
+        if (request.url.path == '/auth/v1/token' &&
+            request.url.queryParameters['grant_type'] == 'id_token') {
+          final parsed = jsonDecode(request.body) as Map<String, dynamic>;
+          recordedTokenRequests.add(parsed);
+
+          if (simulateNonceMismatch) {
+            return http.Response(
+              jsonEncode({
+                'error': 'invalid_grant',
+                'error_description': 'Nonces mismatch',
+                'message':
+                    'Passed nonce and nonce in id_token should either both exist or not',
+              }),
+              400,
+              headers: const {'content-type': 'application/json'},
+            );
+          }
+
+          return http.Response(
+            jsonEncode({
+              'access_token': 'sb_oauth_access_jwt',
+              'token_type': 'bearer',
+              'expires_in': 3600,
+              'refresh_token': 'sb_oauth_refresh_opaque',
+              'user': {
+                'id': '00000000-0000-0000-0000-000000000123',
+                'aud': 'authenticated',
+                'email': 'google.user@evenbill.app',
+                'created_at': '2026-11-25T10:00:00Z',
+                'email_confirmed_at': '2026-11-25T10:00:00Z',
+                'app_metadata': {
+                  'provider': 'google',
+                  'providers': ['google'],
+                },
+                'user_metadata': {
+                  'full_name': 'Google OAuth User',
+                },
+              },
+            }),
+            200,
+            headers: const {'content-type': 'application/json'},
+          );
+        }
+
+        return http.Response('{"error":"not_found"}', 404);
+      });
+
+      final testSupabaseClient = SupabaseClient(
+        'https://example.supabase.co',
+        'test-publishable-key',
+        httpClient: fakeSupabaseHttp,
+        authOptions: const AuthClientOptions(
+          authFlowType: AuthFlowType.implicit,
+          autoRefreshToken: false,
+        ),
+      );
+      SupabaseService.setClientForTesting(testSupabaseClient);
+
+      final dio = Dio(BaseOptions(baseUrl: 'http://test.local'));
+      dio.httpClientAdapter = _MockHttpAdapter((options) {
+        if (options.path.contains('/auth/me') &&
+            options.headers['Authorization'] == 'Bearer sb_oauth_access_jwt') {
+          return ResponseBody.fromString(
+            jsonEncode({
+              'data': {
+                'id': '00000000-0000-0000-0000-000000000123',
+                'email': 'google.user@evenbill.app',
+                'full_name': 'Google OAuth User',
+                'default_currency': 'USD',
+                'is_active': true,
+                'is_verified': true,
+                'has_password': false,
+                'is_pro': false,
+                'created_at': '2026-11-25T10:00:00Z',
+              },
+            }),
+            200,
+            headers: {
+              Headers.contentTypeHeader: [Headers.jsonContentType],
+            },
+          );
+        }
+        return ResponseBody.fromString('{"detail": "Unexpected request"}', 401);
+      });
+
+      final apiClient = ApiClient(customDio: dio, customTokenStorage: testTokenStorage);
+      final authRepo = AuthRepository(apiClient: apiClient, tokenStorage: testTokenStorage);
+
+      try {
+        // Happy path: GoogleAuthService -> AuthRepository -> Supabase /auth/v1/token -> /auth/me
+        final googleResult = await GoogleAuthService.signIn();
+        expect(googleResult, isNotNull);
+        final sentHashedNonce = fakePlatform.recordedInitParams.single.nonce!;
+        expect(sentHashedNonce, GoogleAuthService.hashNonce(googleResult!.nonce!));
+
+        final user = await authRepo.loginWithOAuth(
+          provider: 'google',
+          idToken: googleResult.idToken,
+          nonce: googleResult.nonce,
+          email: googleResult.email,
+          fullName: googleResult.fullName,
+          avatarUrl: googleResult.avatarUrl,
+        );
+
+        expect(user.id, '00000000-0000-0000-0000-000000000123');
+        expect(user.email, 'google.user@evenbill.app');
+        expect(recordedTokenRequests.length, 1);
+        expect(recordedTokenRequests[0]['provider'], 'google');
+        expect(recordedTokenRequests[0]['id_token'], googleResult.idToken);
+        expect(recordedTokenRequests[0]['nonce'], googleResult.nonce);
+        expect(
+          GoogleAuthService.hashNonce(recordedTokenRequests[0]['nonce'] as String),
+          sentHashedNonce,
+        );
+        expect(await testTokenStorage.getAccessToken(), 'sb_oauth_access_jwt');
+
+        // Failure path: Supabase rejects mismatched nonce -> typed ApiException thrown safely
+        simulateNonceMismatch = true;
+        final retryGoogle = await GoogleAuthService.signIn();
+        expect(retryGoogle, isNotNull);
+        await expectLater(
+          () => authRepo.loginWithOAuth(
+            provider: 'google',
+            idToken: retryGoogle!.idToken,
+            nonce: retryGoogle.nonce,
+          ),
+          throwsA(predicate((e) =>
+              e is ApiException &&
+              e.isAuthError &&
+              e.statusCode == 401 &&
+              e.message.toLowerCase().contains('nonce'))),
+        );
+      } finally {
+        await testSupabaseClient.dispose();
+        SupabaseService.resetForTesting();
+        GoogleAuthService.resetForTesting();
+        GoogleSignInPlatform.instance = originalPlatform;
+      }
+    });
   });
+}
+
+class _FakeGoogleSignInPlatform extends GoogleSignInPlatform {
+  final List<InitParameters> recordedInitParams = <InitParameters>[];
+  Object? nextError;
+  int _counter = 0;
+
+  @override
+  Future<void> init(InitParameters params) async {
+    recordedInitParams.add(params);
+  }
+
+  @override
+  Future<AuthenticationResults?>? attemptLightweightAuthentication(
+    AttemptLightweightAuthenticationParameters params,
+  ) =>
+      null;
+
+  @override
+  bool supportsAuthenticate() => true;
+
+  @override
+  Future<AuthenticationResults> authenticate(AuthenticateParameters params) async {
+    final err = nextError;
+    if (err != null) {
+      nextError = null;
+      throw err;
+    }
+    _counter++;
+    return AuthenticationResults(
+      user: const GoogleSignInUserData(
+        email: 'google.user@evenbill.app',
+        id: 'google-uid-1',
+        displayName: 'Google OAuth User',
+      ),
+      authenticationTokens: AuthenticationTokenData(
+        idToken: 'google_id_token_$_counter',
+      ),
+    );
+  }
+
+  @override
+  bool authorizationRequiresUserInteraction() => false;
+
+  @override
+  Future<ClientAuthorizationTokenData?> clientAuthorizationTokensForScopes(
+    ClientAuthorizationTokensForScopesParameters params,
+  ) async =>
+      null;
+
+  @override
+  Future<ServerAuthorizationTokenData?> serverAuthorizationTokensForScopes(
+    ServerAuthorizationTokensForScopesParameters params,
+  ) async =>
+      null;
+
+  @override
+  Future<void> signOut(SignOutParams params) async {}
+
+  @override
+  Future<void> disconnect(DisconnectParams params) async {}
+}
+
+class _FakeSupabaseHttpClient extends http.BaseClient {
+  final Future<http.Response> Function(http.Request request) handler;
+
+  _FakeSupabaseHttpClient(this.handler);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final bodyBytes = await request.finalize().toBytes();
+    final buffered = http.Request(request.method, request.url)
+      ..headers.addAll(request.headers)
+      ..bodyBytes = bodyBytes;
+    final response = await handler(buffered);
+    return http.StreamedResponse(
+      Stream<List<int>>.value(response.bodyBytes),
+      response.statusCode,
+      headers: response.headers,
+      request: request,
+      reasonPhrase: response.reasonPhrase,
+    );
+  }
 }
 
 class _MockHttpAdapter implements HttpClientAdapter {

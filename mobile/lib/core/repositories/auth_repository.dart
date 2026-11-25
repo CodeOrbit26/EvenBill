@@ -293,6 +293,7 @@ class AuthRepository {
   Future<UserModel> loginWithOAuth({
     required String provider,
     String? idToken,
+    String? nonce,
     String? email,
     String? fullName,
     String? avatarUrl,
@@ -327,6 +328,7 @@ class AuthRepository {
         final res = await client.auth.signInWithIdToken(
           provider: oauthProvider,
           idToken: idToken,
+          nonce: nonce,
         );
         final session = res.session;
         if (session == null) {
