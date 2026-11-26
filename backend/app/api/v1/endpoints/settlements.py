@@ -64,7 +64,8 @@ async def list_group_settlements(
 ):
     mem_stmt = select(GroupMember).where(
         GroupMember.group_id == group_id,
-        GroupMember.user_id == current_user.id
+        GroupMember.user_id == current_user.id,
+        GroupMember.is_active == True,
     )
     mem_res = await db.execute(mem_stmt)
     if not mem_res.scalar_one_or_none():

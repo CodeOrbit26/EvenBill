@@ -88,10 +88,11 @@ async def get_spending_insights(
     )
 
     if group_id:
-        # Check group membership
+        # Check active group membership
         gm_stmt = select(GroupMember).where(
             GroupMember.group_id == group_id,
-            GroupMember.user_id == current_user.id
+            GroupMember.user_id == current_user.id,
+            GroupMember.is_active == True,
         )
         gm_res = await db.execute(gm_stmt)
         if not gm_res.scalar_one_or_none():

@@ -22,9 +22,62 @@ from app.models.settlement import Settlement
 from app.models.audit import FinancialAuditLog
 from app.schemas.expense import ExpenseCreate, ExpenseUpdate
 from app.schemas.settlement import SettlementCreate
+from app.services.fx_service import FXService, UnsupportedCurrencyPairError
 
 
 class LedgerService:
+    @staticmethod
+    def _get_verified_rate(from_currency: str, to_currency: str) -> Decimal:
+        """Resolves a verified conversion rate or raises HTTP 422 on unsupported pairs."""
+        src = from_currency.upper().strip()
+        dst = to_currency.upper().strip()
+        if src == dst:
+            return Decimal("1.0")
+        try:
+            rate_info = FXService.get_verified_rate(src, dst)
+        except UnsupportedCurrencyPairError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            )
+        assert rate_info.rate is not None
+        return rate_info.rate
+
+    @staticmethod
+    def _convert_amount(amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
+        """Converts [amount] into [to_currency] using verified FX rates and target quantization."""
+        src = from_currency.upper().strip()
+        dst = to_currency.upper().strip()
+        if src == dst:
+            return quantize_currency(amount, dst)
+        try:
+            return FXService.convert(amount, src, dst).converted_amount
+        except UnsupportedCurrencyPairError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            )
+
+    @staticmethod
+    def _convert_allocations_preserving_total(
+        entries: List[Tuple[str, Decimal]],
+        rate: Decimal,
+        target_total: Decimal,
+        target_currency: str,
+    ) -> List[Tuple[str, Decimal]]:
+        """Converts per-user amounts by [rate] while preserving exact sum == [target_total]."""
+        converted: List[Tuple[str, Decimal]] = [
+            (uid, quantize_currency(amt * rate, target_currency)) for uid, amt in entries
+        ]
+        if not converted:
+            return converted
+        diff = target_total - sum(amt for _, amt in converted)
+        if diff != Decimal("0"):
+            idx = max(range(len(converted)), key=lambda i: abs(converted[i][1]))
+            uid, amt = converted[idx]
+            converted[idx] = (uid, quantize_currency(amt + diff, target_currency))
+        return converted
+
     @staticmethod
     async def _validate_referenced_users(
         db: AsyncSession,
@@ -49,6 +102,7 @@ class LedgerService:
                 select(GroupMember.user_id).where(
                     GroupMember.group_id == group_id,
                     GroupMember.user_id.in_(uid_list),
+                    GroupMember.is_active == True,
                 )
             )
             member_uids = {row[0] for row in gm_res.fetchall()}
@@ -93,9 +147,15 @@ class LedgerService:
             )
 
         # 2. Group Membership and Multi-Currency Resolution
+        if data.exchange_rate is not None and data.exchange_rate <= Decimal("0"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Exchange rate must be strictly positive",
+            )
+
         base_currency = currency
         exchange_rate = data.exchange_rate or Decimal("1.0")
-        rate_source = data.exchange_rate_source or "DEFAULT"
+        rate_source = data.exchange_rate_source or "IDENTITY"
 
         if data.group_id:
             group_stmt = select(Group).where(Group.id == data.group_id, Group.is_archived == False)
@@ -104,19 +164,43 @@ class LedgerService:
             if not group:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found or archived")
 
-            # Verify creator is a member of the group
+            # Verify creator is an active member of the group
             member_stmt = select(GroupMember).where(
                 GroupMember.group_id == data.group_id,
-                GroupMember.user_id == creator.id
+                GroupMember.user_id == creator.id,
+                GroupMember.is_active == True,
             )
             member_res = await db.execute(member_stmt)
             if not member_res.scalar_one_or_none():
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not a member of this group")
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not an active member of this group")
 
-            base_currency = group.base_currency
-            if currency != base_currency and exchange_rate == Decimal("1.0") and not data.exchange_rate:
-                # Default rate if not supplied (in production, fetched from FXService cache)
-                rate_source = "SNAPSHOT_FALLBACK"
+            base_currency = group.base_currency.upper().strip()
+            if currency == base_currency:
+                if data.exchange_rate is not None and data.exchange_rate != Decimal("1"):
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=f"Exchange rate must be 1.0 when currency matches group base currency ({base_currency}).",
+                    )
+                exchange_rate = Decimal("1.0")
+                rate_source = data.exchange_rate_source or "IDENTITY"
+            elif data.exchange_rate is None:
+                try:
+                    rate_info = FXService.get_verified_rate(currency, base_currency)
+                except UnsupportedCurrencyPairError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=str(exc),
+                    )
+                assert rate_info.rate is not None
+                exchange_rate = rate_info.rate
+                rate_source = data.exchange_rate_source or rate_info.source
+            else:
+                rate_source = data.exchange_rate_source or "MANUAL"
+        elif data.exchange_rate is not None and data.exchange_rate != Decimal("1"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Exchange rate must be 1.0 or omitted for direct (non-group) expenses.",
+            )
 
         base_currency_amount = quantize_currency(quantized_total * exchange_rate, base_currency)
 
@@ -151,7 +235,10 @@ class LedgerService:
                 participants = data.participant_ids or []
                 if not participants:
                     if data.group_id:
-                        gm_stmt = select(GroupMember.user_id).where(GroupMember.group_id == data.group_id)
+                        gm_stmt = select(GroupMember.user_id).where(
+                            GroupMember.group_id == data.group_id,
+                            GroupMember.is_active == True,
+                        )
                         gm_res = await db.execute(gm_stmt)
                         participants = [row[0] for row in gm_res.fetchall()]
                     else:
@@ -203,7 +290,10 @@ class LedgerService:
                 participants = data.participant_ids or []
                 if not participants:
                     if data.group_id:
-                        gm_stmt = select(GroupMember.user_id).where(GroupMember.group_id == data.group_id)
+                        gm_stmt = select(GroupMember.user_id).where(
+                            GroupMember.group_id == data.group_id,
+                            GroupMember.is_active == True,
+                        )
                         gm_res = await db.execute(gm_stmt)
                         participants = [row[0] for row in gm_res.fetchall()]
                     else:
@@ -342,11 +432,12 @@ class LedgerService:
         if expense.group_id:
             mem_stmt = select(GroupMember).where(
                 GroupMember.group_id == expense.group_id,
-                GroupMember.user_id == user.id
+                GroupMember.user_id == user.id,
+                GroupMember.is_active == True,
             )
             mem_res = await db.execute(mem_stmt)
             if not mem_res.scalar_one_or_none():
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Not a member of this expense's group")
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Not an active member of this expense's group")
         else:
             is_involved = (
                 expense.created_by == user.id
@@ -368,11 +459,18 @@ class LedgerService:
             "description": expense.description,
             "total_amount": str(expense.total_amount),
             "currency": expense.currency,
+            "exchange_rate": str(expense.exchange_rate),
+            "exchange_rate_source": expense.exchange_rate_source,
+            "base_currency_amount": str(expense.base_currency_amount),
             "split_type": expense.split_type,
             "version": expense.version,
             "payers": [{"user_id": p.user_id, "amount": str(p.amount_paid)} for p in expense.payers],
             "splits": [{"user_id": s.user_id, "amount": str(s.owed_amount)} for s in expense.splits]
         }
+
+        prev_currency = expense.currency.upper().strip()
+        prev_total = expense.total_amount
+        prev_split_type = expense.split_type.upper().strip()
 
         # Apply field changes
         if data.description is not None:
@@ -384,142 +482,254 @@ class LedgerService:
         if data.expense_date is not None:
             expense.expense_date = data.expense_date
 
-        total_amount = data.total_amount if data.total_amount is not None else expense.total_amount
-        currency = data.currency.upper().strip() if data.currency is not None else expense.currency
-        split_type = data.split_type.upper().strip() if data.split_type is not None else expense.split_type
+        raw_total = data.total_amount if data.total_amount is not None else prev_total
+        currency = data.currency.upper().strip() if data.currency is not None else prev_currency
+        split_type = data.split_type.upper().strip() if data.split_type is not None else prev_split_type
 
-        quantized_total = quantize_currency(total_amount, currency)
+        currency_changed = currency != prev_currency
+        quantized_total = quantize_currency(raw_total, currency)
+        if quantized_total <= Decimal("0"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Expense total amount must be strictly positive",
+            )
+        total_changed = data.total_amount is not None or quantized_total != prev_total
+
         expense.total_amount = quantized_total
         expense.currency = currency
         expense.split_type = split_type
 
-        # Update base currency amount using existing frozen exchange rate
+        # Update base currency amount, preserving custom frozen historical rates unless currency actually changed
         base_currency = currency
         if expense.group_id:
             grp_stmt = select(Group).where(Group.id == expense.group_id)
             grp_res = await db.execute(grp_stmt)
             grp = grp_res.scalar_one_or_none()
             if grp:
-                base_currency = grp.base_currency
+                base_currency = grp.base_currency.upper().strip()
+
+        if data.exchange_rate is not None:
+            if data.exchange_rate <= Decimal("0"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Exchange rate must be strictly positive",
+                )
+            if currency == base_currency and data.exchange_rate != Decimal("1"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Exchange rate must be 1.0 when currency matches base currency ({base_currency}).",
+                )
+            expense.exchange_rate = data.exchange_rate
+            expense.exchange_rate_source = (
+                data.exchange_rate_source
+                or ("IDENTITY" if currency == base_currency else "MANUAL")
+            ).strip()
+            expense.exchange_rate_timestamp = datetime.now(timezone.utc)
+        elif currency == base_currency:
+            expense.exchange_rate = Decimal("1.0")
+            expense.exchange_rate_source = "IDENTITY"
+            expense.exchange_rate_timestamp = datetime.now(timezone.utc)
+        elif currency_changed or (
+            expense.exchange_rate == Decimal("1.0")
+            and expense.exchange_rate_source in ("DEFAULT", "SNAPSHOT_FALLBACK", "UNAVAILABLE_FALLBACK")
+        ):
+            try:
+                rate_info = FXService.get_verified_rate(currency, base_currency)
+            except UnsupportedCurrencyPairError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=str(exc),
+                )
+            assert rate_info.rate is not None
+            expense.exchange_rate = rate_info.rate
+            expense.exchange_rate_source = rate_info.source
+            expense.exchange_rate_timestamp = datetime.now(timezone.utc)
+
         expense.base_currency_amount = quantize_currency(quantized_total * expense.exchange_rate, base_currency)
 
-        # Re-process Payers if provided, or scale single payer if total_amount changed
+        # Reconcile Payers if provided, total changed, or currency precision/identity changed
+        resulting_payers: List[Tuple[str, Decimal]] = []
+        existing_payers = list(expense.payers)
         if data.payers is not None:
+            if len(data.payers) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Payers list cannot be empty when explicitly provided",
+                )
             total_paid = Decimal("0")
-            new_payers = []
             for p in data.payers:
                 p_amt = quantize_currency(p.amount_paid, currency)
+                if p_amt <= Decimal("0"):
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=f"Amount paid by user {p.user_id} must be strictly positive",
+                    )
                 total_paid += p_amt
-                new_payers.append((p.user_id, p_amt))
+                resulting_payers.append((p.user_id, p_amt))
 
             if total_paid != quantized_total:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Sum of payer amounts ({total_paid}) does not match total expense amount ({quantized_total})"
                 )
 
-            # Clear existing payers
-            for old_p in list(expense.payers):
+            for old_p in existing_payers:
                 await db.delete(old_p)
             await db.flush()
 
-            for uid, amt in new_payers:
+            for uid, amt in resulting_payers:
                 db.add(ExpensePayer(expense_id=expense.id, user_id=uid, amount_paid=amt))
 
-        elif data.total_amount is not None:
-            existing_payers = list(expense.payers)
+        elif total_changed or currency_changed:
             if len(existing_payers) == 1:
                 existing_payers[0].amount_paid = quantized_total
-            else:
-                current_total_paid = sum(p.amount_paid for p in existing_payers)
-                if current_total_paid != quantized_total:
+                resulting_payers = [(existing_payers[0].user_id, quantized_total)]
+            elif existing_payers:
+                requantized = [(p, quantize_currency(p.amount_paid, currency)) for p in existing_payers]
+                req_sum = sum(amt for _, amt in requantized)
+                if any(amt <= Decimal("0") for _, amt in requantized) or req_sum != quantized_total:
                     raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail=f"Total amount changed to {quantized_total}, but payers sum is {current_total_paid}. Please provide updated payers list."
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=(
+                            f"Expense updated to {quantized_total} {currency}, "
+                            f"but existing multi-payer amounts resolve to {req_sum}. "
+                            "Please provide updated payers list."
+                        ),
                     )
+                for p_obj, q_amt in requantized:
+                    p_obj.amount_paid = q_amt
+                    resulting_payers.append((p_obj.user_id, q_amt))
+        else:
+            resulting_payers = [(p.user_id, p.amount_paid) for p in existing_payers]
 
-        # Re-process Splits if provided or if total_amount changed
-        if (
-            data.splits is not None or
-            data.participant_ids is not None or
-            data.percentages is not None or
-            data.shares is not None or
-            data.adjustments is not None or
-            data.items is not None or
-            data.total_amount is not None
-        ):
+        # Reconcile Splits whenever split parameters, total_amount, currency, or split_type changed
+        existing_splits = list(expense.splits)
+        should_reprocess_splits = (
+            data.splits is not None
+            or data.participant_ids is not None
+            or data.percentages is not None
+            or data.shares is not None
+            or data.adjustments is not None
+            or data.items is not None
+            or total_changed
+            or currency_changed
+            or split_type != prev_split_type
+        )
+        resulting_splits: List[Tuple[str, Decimal, Optional[Decimal]]] = []
+        if should_reprocess_splits:
             new_splits: List[Tuple[str, Decimal, Optional[Decimal]]] = []
             try:
                 if split_type == "EQUAL":
-                    participants = data.participant_ids or [s.user_id for s in expense.splits] or [user.id]
+                    participants = data.participant_ids or [s.user_id for s in existing_splits] or [user.id]
                     split_results = MoneyEngine.split_equally(quantized_total, currency, participants)
                     for sr in split_results:
                         new_splits.append((sr.user_id, sr.amount, sr.share_value))
                 elif split_type == "EXACT":
-                    if not data.splits:
-                        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Splits required for EXACT")
-                    exact_map = {s.user_id: s.owed_amount for s in data.splits}
+                    if data.splits is not None:
+                        exact_map = {s.user_id: s.owed_amount for s in data.splits}
+                    elif existing_splits:
+                        exact_map = {s.user_id: s.owed_amount for s in existing_splits}
+                    else:
+                        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Splits required for EXACT")
                     split_results = MoneyEngine.validate_exact_splits(quantized_total, currency, exact_map)
                     for sr in split_results:
                         new_splits.append((sr.user_id, sr.amount, None))
                 elif split_type == "PERCENTAGE":
-                    if not data.percentages:
-                        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Percentages required")
-                    split_results = MoneyEngine.split_by_percentages(quantized_total, currency, data.percentages)
+                    percentages = data.percentages
+                    if not percentages:
+                        if existing_splits and all(s.share_quantity is not None for s in existing_splits):
+                            percentages = {s.user_id: s.share_quantity for s in existing_splits if s.share_quantity is not None}
+                        else:
+                            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Percentages required")
+                    split_results = MoneyEngine.split_by_percentages(quantized_total, currency, percentages)
                     for sr in split_results:
                         new_splits.append((sr.user_id, sr.amount, sr.share_value))
                 elif split_type == "SHARES":
-                    if not data.shares:
-                        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Shares required")
-                    split_results = MoneyEngine.split_by_shares(quantized_total, currency, data.shares)
+                    shares = data.shares
+                    if not shares:
+                        if existing_splits and all(s.share_quantity is not None for s in existing_splits):
+                            shares = {s.user_id: s.share_quantity for s in existing_splits if s.share_quantity is not None}
+                        else:
+                            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Shares required")
+                    split_results = MoneyEngine.split_by_shares(quantized_total, currency, shares)
                     for sr in split_results:
                         new_splits.append((sr.user_id, sr.amount, sr.share_value))
                 elif split_type == "ADJUSTMENT":
-                    participants = data.participant_ids or [s.user_id for s in expense.splits]
-                    adjustments = data.adjustments or {}
+                    participants = data.participant_ids or [s.user_id for s in existing_splits]
+                    adjustments = (
+                        data.adjustments
+                        if data.adjustments is not None
+                        else {s.user_id: s.share_quantity for s in existing_splits if s.share_quantity is not None}
+                    )
                     split_results = MoneyEngine.split_with_adjustments(quantized_total, currency, participants, adjustments)
                     for sr in split_results:
                         new_splits.append((sr.user_id, sr.amount, sr.share_value))
                 elif split_type == "ITEMIZED":
-                    if not data.items:
-                        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Items required for itemized split")
-                    item_entries = [
-                        ItemizedEntry(description=it.description, amount=it.amount, participant_ids=it.participant_ids)
-                        for it in data.items
-                    ]
-                    _, split_results = MoneyEngine.split_itemized(
-                        currency=currency,
-                        items=item_entries,
-                        tax=data.tax or Decimal("0"),
-                        tip=data.tip or Decimal("0"),
-                        fee=data.fee or Decimal("0"),
-                        discount=data.discount or Decimal("0")
-                    )
-                    for sr in split_results:
-                        new_splits.append((sr.user_id, sr.amount, sr.share_value))
+                    if data.items:
+                        item_entries = [
+                            ItemizedEntry(description=it.description, amount=it.amount, participant_ids=it.participant_ids)
+                            for it in data.items
+                        ]
+                        calculated_total, split_results = MoneyEngine.split_itemized(
+                            currency=currency,
+                            items=item_entries,
+                            tax=data.tax or Decimal("0"),
+                            tip=data.tip or Decimal("0"),
+                            fee=data.fee or Decimal("0"),
+                            discount=data.discount or Decimal("0")
+                        )
+                        if calculated_total != quantized_total:
+                            raise HTTPException(
+                                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail=f"Calculated itemized total ({calculated_total}) does not match expense total ({quantized_total})",
+                            )
+                        for sr in split_results:
+                            new_splits.append((sr.user_id, sr.amount, sr.share_value))
+                    elif currency_changed and not total_changed and existing_splits:
+                        exact_map = {s.user_id: s.owed_amount for s in existing_splits}
+                        split_results = MoneyEngine.validate_exact_splits(quantized_total, currency, exact_map)
+                        share_map = {s.user_id: s.share_quantity for s in existing_splits}
+                        for sr in split_results:
+                            q_share = (
+                                quantize_currency(share_map[sr.user_id], currency)
+                                if share_map.get(sr.user_id) is not None
+                                else None
+                            )
+                            new_splits.append((sr.user_id, sr.amount, q_share))
+                    else:
+                        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Items required for itemized split")
+                else:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsupported split type: {split_type}")
             except ValueError as e:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
 
-            # Clear old splits
-            for old_s in list(expense.splits):
+            for old_s in existing_splits:
                 await db.delete(old_s)
             await db.flush()
 
             for uid, amt, share in new_splits:
                 db.add(ExpenseSplit(expense_id=expense.id, user_id=uid, owed_amount=amt, share_quantity=share))
+            resulting_splits = new_splits
+        else:
+            resulting_splits = [(s.user_id, s.owed_amount, s.share_quantity) for s in existing_splits]
+
+        # Enforce strict conservation after update
+        final_paid_sum = sum((amt for _, amt in resulting_payers), Decimal("0"))
+        final_owed_sum = sum((amt for _, amt, _ in resulting_splits), Decimal("0"))
+        if final_paid_sum != quantized_total:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Sum of payer amounts ({final_paid_sum}) does not match total expense amount ({quantized_total})",
+            )
+        if final_owed_sum != quantized_total:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Sum of split amounts ({final_owed_sum}) does not match total expense amount ({quantized_total})",
+            )
 
         referenced_uids = (
-            {p.user_id for p in (data.payers or [])}
-            | {uid for uid, _ in (new_payers if data.payers is not None else [])}
-            | {uid for uid, _, _ in (new_splits if (
-                data.splits is not None or
-                data.participant_ids is not None or
-                data.percentages is not None or
-                data.shares is not None or
-                data.adjustments is not None or
-                data.items is not None or
-                data.total_amount is not None
-            ) else [])}
+            {uid for uid, _ in resulting_payers}
+            | {uid for uid, _, _ in resulting_splits}
         )
         await LedgerService._validate_referenced_users(db, referenced_uids, expense.group_id)
 
@@ -531,8 +741,13 @@ class LedgerService:
             "description": expense.description,
             "total_amount": str(expense.total_amount),
             "currency": expense.currency,
+            "exchange_rate": str(expense.exchange_rate),
+            "exchange_rate_source": expense.exchange_rate_source,
+            "base_currency_amount": str(expense.base_currency_amount),
             "split_type": expense.split_type,
             "version": expense.version,
+            "payers": [{"user_id": uid, "amount": str(amt)} for uid, amt in resulting_payers],
+            "splits": [{"user_id": uid, "amount": str(amt)} for uid, amt, _ in resulting_splits],
         }
         db.add(FinancialAuditLog(
             entity_type="EXPENSE",
@@ -654,18 +869,19 @@ class LedgerService:
                     detail=f"User {uid} not found"
                 )
 
-        # Verify group membership if group_id is specified
+        # Verify active group membership if group_id is specified
         if data.group_id:
             for uid in (payer_id, data.recipient_id):
                 gm_stmt = select(GroupMember).where(
                     GroupMember.group_id == data.group_id,
-                    GroupMember.user_id == uid
+                    GroupMember.user_id == uid,
+                    GroupMember.is_active == True,
                 )
                 res = await db.execute(gm_stmt)
                 if not res.scalar_one_or_none():
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"User {uid} is not a member of group {data.group_id}"
+                        detail=f"User {uid} is not an active member of group {data.group_id}"
                     )
 
         settlement = Settlement(
@@ -704,6 +920,98 @@ class LedgerService:
         return settlement
 
     @staticmethod
+    def _compute_group_ledger_from_records(
+        group: Group,
+        expenses: List[Expense],
+        settlements: List[Settlement],
+        include_debts: bool = True,
+    ) -> Tuple[Dict[str, Decimal], List[SimplifiedDebt], List[BilateralDebt], str]:
+        """Computes group net balances (and optional debts) from preloaded ORM records."""
+        currency = group.base_currency.upper().strip()
+        payers_list: List[Tuple[str, Decimal]] = []
+        splits_list: List[Tuple[str, Decimal]] = []
+        expense_records: List[Dict[str, Any]] = []
+
+        for exp in expenses:
+            exp_currency = exp.currency.upper().strip()
+            if exp_currency == currency:
+                rate = Decimal("1.0")
+            elif exp.exchange_rate != Decimal("1.0") or exp.exchange_rate_source not in (
+                "DEFAULT",
+                "SNAPSHOT_FALLBACK",
+                "UNAVAILABLE_FALLBACK",
+            ):
+                rate = exp.exchange_rate
+            else:
+                rate = LedgerService._get_verified_rate(exp_currency, currency)
+
+            converted_total = quantize_currency(exp.total_amount * rate, currency)
+            exp_payers = LedgerService._convert_allocations_preserving_total(
+                [(p.user_id, p.amount_paid) for p in exp.payers],
+                rate,
+                converted_total,
+                currency,
+            )
+            exp_splits = LedgerService._convert_allocations_preserving_total(
+                [(s.user_id, s.owed_amount) for s in exp.splits],
+                rate,
+                converted_total,
+                currency,
+            )
+
+            payers_list.extend(exp_payers)
+            splits_list.extend(exp_splits)
+            if include_debts:
+                expense_records.append({
+                    "payers": exp_payers,
+                    "splits": exp_splits,
+                    "total_amount": converted_total,
+                })
+
+        settle_list: List[Tuple[str, str, Decimal]] = []
+        settlement_records: List[Dict[str, Any]] = []
+        for s in settlements:
+            s_amt = LedgerService._convert_amount(s.amount, s.currency, currency)
+            settle_list.append((s.payer_id, s.recipient_id, s_amt))
+            if include_debts:
+                settlement_records.append({
+                    "payer_id": s.payer_id,
+                    "recipient_id": s.recipient_id,
+                    "amount": s_amt,
+                })
+
+        net_balances = DebtSimplifier.calculate_group_net_balances(
+            payers=payers_list,
+            splits=splits_list,
+            settlements=settle_list,
+            currency=currency,
+        )
+
+        # Pad active members with 0.0000 when settled (preserve inactive former members who still have ledger entries)
+        if group.members:
+            for m in group.members:
+                if m.is_active and m.user_id not in net_balances:
+                    net_balances[m.user_id] = quantize_currency(Decimal("0"), currency)
+
+        if not include_debts:
+            return net_balances, [], [], currency
+
+        bilateral_debts = DebtSimplifier.calculate_pairwise_bilateral_debts(
+            expense_records=expense_records,
+            settlement_records=settlement_records,
+            currency=currency,
+        )
+
+        simplified_debts: List[SimplifiedDebt] = []
+        if group.simplify_debts:
+            simplified_debts = DebtSimplifier.simplify_net_balances(
+                net_balances=net_balances,
+                currency=currency,
+            )
+
+        return net_balances, simplified_debts, bilateral_debts, currency
+
+    @staticmethod
     async def get_group_balances(
         db: AsyncSession,
         group_id: str
@@ -714,82 +1022,174 @@ class LedgerService:
         if not group:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
 
-        currency = group.base_currency
-
-        # Active non-deleted expenses
         exp_stmt = (
             select(Expense)
             .where(Expense.group_id == group_id, Expense.is_deleted == False)
             .options(selectinload(Expense.payers), selectinload(Expense.splits))
         )
         exp_res = await db.execute(exp_stmt)
-        expenses = exp_res.scalars().all()
+        expenses = list(exp_res.scalars().all())
 
-        payers_list: List[Tuple[str, Decimal]] = []
-        splits_list: List[Tuple[str, Decimal]] = []
-        expense_records: List[Dict] = []
-
-        for exp in expenses:
-            # Handle currency conversion to base currency
-            rate = exp.exchange_rate if exp.currency != currency else Decimal("1.0")
-
-            exp_payers = [(p.user_id, quantize_currency(p.amount_paid * rate, currency)) for p in exp.payers]
-            exp_splits = [(s.user_id, quantize_currency(s.owed_amount * rate, currency)) for s in exp.splits]
-
-            payers_list.extend(exp_payers)
-            splits_list.extend(exp_splits)
-            expense_records.append({
-                "payers": exp_payers,
-                "splits": exp_splits,
-                "total_amount": quantize_currency(exp.total_amount * rate, currency)
-            })
-
-        # Active non-deleted settlements
         settle_stmt = select(Settlement).where(
             Settlement.group_id == group_id,
-            Settlement.is_deleted == False
+            Settlement.is_deleted == False,
+        )
+        settle_res = await db.execute(settle_stmt)
+        settlements = list(settle_res.scalars().all())
+
+        return LedgerService._compute_group_ledger_from_records(
+            group=group,
+            expenses=expenses,
+            settlements=settlements,
+            include_debts=True,
+        )
+
+    @staticmethod
+    async def get_groups_net_balances_batch(
+        db: AsyncSession,
+        groups: List[Group],
+    ) -> Dict[str, Tuple[Dict[str, Decimal], str]]:
+        """
+        Batch-computes per-member net balances and base currency for multiple [groups]
+        in 2 queries (IN group_ids) instead of N separate get_group_balances calls.
+        """
+        if not groups:
+            return {}
+
+        group_ids = [g.id for g in groups]
+        exp_stmt = (
+            select(Expense)
+            .where(Expense.group_id.in_(group_ids), Expense.is_deleted == False)
+            .options(selectinload(Expense.payers), selectinload(Expense.splits))
+        )
+        exp_res = await db.execute(exp_stmt)
+        exps_by_group: Dict[str, List[Expense]] = {gid: [] for gid in group_ids}
+        for exp in exp_res.scalars().all():
+            if exp.group_id in exps_by_group:
+                exps_by_group[exp.group_id].append(exp)
+
+        settle_stmt = select(Settlement).where(
+            Settlement.group_id.in_(group_ids),
+            Settlement.is_deleted == False,
+        )
+        settle_res = await db.execute(settle_stmt)
+        settlements_by_group: Dict[str, List[Settlement]] = {gid: [] for gid in group_ids}
+        for s in settle_res.scalars().all():
+            if s.group_id in settlements_by_group:
+                settlements_by_group[s.group_id].append(s)
+
+        results: Dict[str, Tuple[Dict[str, Decimal], str]] = {}
+        for g in groups:
+            net_balances, _, _, currency = LedgerService._compute_group_ledger_from_records(
+                group=g,
+                expenses=exps_by_group.get(g.id, []),
+                settlements=settlements_by_group.get(g.id, []),
+                include_debts=False,
+            )
+            results[g.id] = (net_balances, currency)
+        return results
+
+    @staticmethod
+    async def get_direct_bilateral_overview(
+        db: AsyncSession,
+        user_id: str,
+        target_currency: str = "USD",
+    ) -> Tuple[Dict[str, Decimal], Decimal, Decimal, Set[str]]:
+        """
+        Computes per-counterparty bilateral net balances for all direct (non-group)
+        expenses and settlements involving [user_id], converted to [target_currency].
+        Returns: (per_counterparty_net, you_are_owed_total, you_owe_total, counterparty_ids).
+        """
+        dst_currency = target_currency.upper().strip()
+        exp_stmt = (
+            select(Expense)
+            .where(
+                Expense.group_id.is_(None),
+                Expense.is_deleted == False,
+                or_(
+                    Expense.created_by == user_id,
+                    Expense.payers.any(ExpensePayer.user_id == user_id),
+                    Expense.splits.any(ExpenseSplit.user_id == user_id),
+                ),
+            )
+            .options(selectinload(Expense.payers), selectinload(Expense.splits))
+        )
+        exp_res = await db.execute(exp_stmt)
+        expenses = exp_res.scalars().all()
+
+        counterparties: Set[str] = set()
+        shared_expenses: List[Dict[str, Any]] = []
+        for exp in expenses:
+            participant_uids = {p.user_id for p in exp.payers} | {s.user_id for s in exp.splits}
+            if user_id not in participant_uids:
+                continue
+            for uid in participant_uids:
+                if uid != user_id:
+                    counterparties.add(uid)
+
+            exp_curr = exp.currency.upper().strip()
+            rate = LedgerService._get_verified_rate(exp_curr, dst_currency)
+            converted_total = quantize_currency(exp.total_amount * rate, dst_currency)
+            conv_payers = LedgerService._convert_allocations_preserving_total(
+                [(p.user_id, p.amount_paid) for p in exp.payers],
+                rate,
+                converted_total,
+                dst_currency,
+            )
+            conv_splits = LedgerService._convert_allocations_preserving_total(
+                [(s.user_id, s.owed_amount) for s in exp.splits],
+                rate,
+                converted_total,
+                dst_currency,
+            )
+            shared_expenses.append({
+                "payers": conv_payers,
+                "splits": conv_splits,
+                "total_amount": converted_total,
+            })
+
+        settle_stmt = select(Settlement).where(
+            Settlement.group_id.is_(None),
+            Settlement.is_deleted == False,
+            or_(Settlement.payer_id == user_id, Settlement.recipient_id == user_id),
         )
         settle_res = await db.execute(settle_stmt)
         settlements = settle_res.scalars().all()
 
-        settle_list: List[Tuple[str, str, Decimal]] = [
-            (s.payer_id, s.recipient_id, s.amount) for s in settlements
-        ]
-        settlement_records = [
-            {"payer_id": s.payer_id, "recipient_id": s.recipient_id, "amount": s.amount}
-            for s in settlements
-        ]
+        settlement_records = []
+        for s in settlements:
+            other_uid = s.recipient_id if s.payer_id == user_id else s.payer_id
+            if other_uid != user_id:
+                counterparties.add(other_uid)
+            settlement_records.append({
+                "payer_id": s.payer_id,
+                "recipient_id": s.recipient_id,
+                "amount": LedgerService._convert_amount(s.amount, s.currency, dst_currency),
+            })
 
-        # Net balance calculation
-        net_balances = DebtSimplifier.calculate_group_net_balances(
-            payers=payers_list,
-            splits=splits_list,
-            settlements=settle_list,
-            currency=currency
-        )
-
-        # Ensure all group members have an explicit balance entry (0.0000 if settled)
-        if group and group.members:
-            for m in group.members:
-                if m.user_id not in net_balances:
-                    net_balances[m.user_id] = quantize_currency(Decimal("0"), currency)
-
-        # Bilateral direct debts (without simplification)
-        bilateral_debts = DebtSimplifier.calculate_pairwise_bilateral_debts(
-            expense_records=expense_records,
+        bilateral_list = DebtSimplifier.calculate_pairwise_bilateral_debts(
+            expense_records=shared_expenses,
             settlement_records=settlement_records,
-            currency=currency
+            currency=dst_currency,
         )
 
-        # Simplified debts
-        simplified_debts: List[SimplifiedDebt] = []
-        if group.simplify_debts:
-            simplified_debts = DebtSimplifier.simplify_net_balances(
-                net_balances=net_balances,
-                currency=currency
-            )
+        per_counterparty: Dict[str, Decimal] = {}
+        you_are_owed = Decimal("0")
+        you_owe = Decimal("0")
+        for b in bilateral_list:
+            if b.creditor_id == user_id and b.debtor_id != user_id:
+                per_counterparty[b.debtor_id] = per_counterparty.get(b.debtor_id, Decimal("0")) + b.amount
+                you_are_owed += b.amount
+            elif b.debtor_id == user_id and b.creditor_id != user_id:
+                per_counterparty[b.creditor_id] = per_counterparty.get(b.creditor_id, Decimal("0")) - b.amount
+                you_owe += b.amount
 
-        return net_balances, simplified_debts, bilateral_debts, currency
+        return (
+            per_counterparty,
+            quantize_currency(you_are_owed, dst_currency),
+            quantize_currency(you_owe, dst_currency),
+            counterparties,
+        )
 
     @staticmethod
     async def get_1on1_friend_balances(
@@ -804,57 +1204,7 @@ class LedgerService:
         Negative = user_id_1 owes money to user_id_2.
         Never double-counts the payer's own share.
         """
-        # Find all direct expenses (group_id is None) involving both users
-        exp_stmt = (
-            select(Expense)
-            .where(
-                Expense.group_id.is_(None),
-                Expense.is_deleted == False,
-                Expense.currency == currency.upper()
-            )
-            .options(selectinload(Expense.payers), selectinload(Expense.splits))
+        per_counterparty, _, _, _ = await LedgerService.get_direct_bilateral_overview(
+            db, user_id_1, currency
         )
-        exp_res = await db.execute(exp_stmt)
-        expenses = exp_res.scalars().all()
-
-        shared_expenses = []
-        for exp in expenses:
-            participant_uids = {p.user_id for p in exp.payers} | {s.user_id for s in exp.splits}
-            if user_id_1 in participant_uids and user_id_2 in participant_uids:
-                shared_expenses.append({
-                    "payers": [(p.user_id, p.amount_paid) for p in exp.payers],
-                    "splits": [(s.user_id, s.owed_amount) for s in exp.splits],
-                    "total_amount": exp.total_amount
-                })
-
-        # Settlements between user_1 and user_2
-        settle_stmt = select(Settlement).where(
-            Settlement.group_id.is_(None),
-            Settlement.is_deleted == False,
-            Settlement.currency == currency.upper(),
-            or_(
-                and_(Settlement.payer_id == user_id_1, Settlement.recipient_id == user_id_2),
-                and_(Settlement.payer_id == user_id_2, Settlement.recipient_id == user_id_1),
-            )
-        )
-        settle_res = await db.execute(settle_stmt)
-        settlements = settle_res.scalars().all()
-
-        settlement_records = [
-            {"payer_id": s.payer_id, "recipient_id": s.recipient_id, "amount": s.amount}
-            for s in settlements
-        ]
-
-        bilateral_list = DebtSimplifier.calculate_pairwise_bilateral_debts(
-            expense_records=shared_expenses,
-            settlement_records=settlement_records,
-            currency=currency.upper()
-        )
-
-        for b in bilateral_list:
-            if b.debtor_id == user_id_2 and b.creditor_id == user_id_1:
-                return b.amount
-            elif b.debtor_id == user_id_1 and b.creditor_id == user_id_2:
-                return -b.amount
-
-        return Decimal("0")
+        return quantize_currency(per_counterparty.get(user_id_2, Decimal("0")), currency)

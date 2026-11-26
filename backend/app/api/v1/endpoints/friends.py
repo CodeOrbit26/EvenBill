@@ -12,9 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
-from app.models.group import GroupMember
+from app.models.group import Group, GroupMember
 from app.models.expense import Expense, ExpensePayer, ExpenseSplit
 from app.models.settlement import Settlement
+from app.core.money import quantize_currency
 from app.schemas.common import APIResponse
 from app.services.ledger_service import LedgerService
 
@@ -44,8 +45,16 @@ async def list_friends(
 ):
     currency = current_user.default_currency or "USD"
 
-    # 1. Discover all distinct co-members across all shared groups
-    shared_group_ids_stmt = select(GroupMember.group_id).where(GroupMember.user_id == current_user.id)
+    # 1. Discover all distinct active co-members across shared non-archived groups
+    shared_group_ids_stmt = (
+        select(GroupMember.group_id)
+        .join(Group, Group.id == GroupMember.group_id)
+        .where(
+            GroupMember.user_id == current_user.id,
+            GroupMember.is_active == True,
+            Group.is_archived == False,
+        )
+    )
     shared_res = await db.execute(shared_group_ids_stmt)
     group_ids = [row[0] for row in shared_res.fetchall()]
 
@@ -54,7 +63,8 @@ async def list_friends(
     if group_ids:
         co_members_stmt = select(GroupMember.user_id).where(
             GroupMember.group_id.in_(group_ids),
-            GroupMember.user_id != current_user.id
+            GroupMember.user_id != current_user.id,
+            GroupMember.is_active == True,
         )
         co_res = await db.execute(co_members_stmt)
         for row in co_res.fetchall():
@@ -102,14 +112,15 @@ async def list_friends(
     users_res = await db.execute(users_stmt)
     friends = users_res.scalars().all()
 
+    per_counterparty, _, _, _ = await LedgerService.get_direct_bilateral_overview(
+        db=db,
+        user_id=current_user.id,
+        target_currency=currency,
+    )
+
     items: List[FriendItem] = []
     for f in friends:
-        net_bal = await LedgerService.get_1on1_friend_balances(
-            db=db,
-            user_id_1=current_user.id,
-            user_id_2=f.id,
-            currency=currency
-        )
+        net_bal = quantize_currency(per_counterparty.get(f.id, Decimal("0")), currency)
         if net_bal > Decimal("0"):
             bal_status = "YOU_ARE_OWED"
         elif net_bal < Decimal("0"):

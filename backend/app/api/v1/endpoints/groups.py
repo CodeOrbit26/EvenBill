@@ -3,6 +3,7 @@ EvenBill Group Management REST Endpoints
 """
 
 import uuid
+from decimal import Decimal
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -25,6 +26,28 @@ from app.services.ledger_service import LedgerService
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/groups", tags=["Groups"])
+
+
+def _build_group_response(
+    group: Group,
+    *,
+    member_count: int,
+    net_balance: Decimal = Decimal("0"),
+) -> GroupResponse:
+    return GroupResponse(
+        id=group.id,
+        name=group.name,
+        group_type=group.group_type,
+        base_currency=group.base_currency,
+        simplify_debts=group.simplify_debts,
+        invite_code=group.invite_code,
+        avatar_url=group.avatar_url,
+        created_by=group.created_by,
+        is_archived=group.is_archived,
+        created_at=group.created_at,
+        member_count=member_count,
+        net_balance=net_balance,
+    )
 
 
 @router.post("/", response_model=APIResponse[GroupResponse], status_code=status.HTTP_201_CREATED)
@@ -55,20 +78,7 @@ async def create_group(
     await db.commit()
     await db.refresh(group)
 
-    resp = GroupResponse(
-        id=group.id,
-        name=group.name,
-        group_type=group.group_type,
-        base_currency=group.base_currency,
-        simplify_debts=group.simplify_debts,
-        invite_code=group.invite_code,
-        avatar_url=group.avatar_url,
-        created_by=group.created_by,
-        is_archived=group.is_archived,
-        created_at=group.created_at,
-        member_count=1
-    )
-    return APIResponse(data=resp)
+    return APIResponse(data=_build_group_response(group, member_count=1))
 
 
 @router.get("/", response_model=APIResponse[List[GroupResponse]])
@@ -76,32 +86,34 @@ async def list_groups(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Fetch all groups where user is a member
+    # Fetch all non-archived groups where user is an active member
     stmt = (
         select(Group)
         .join(GroupMember, GroupMember.group_id == Group.id)
-        .where(GroupMember.user_id == current_user.id, Group.is_archived == False)
+        .where(
+            GroupMember.user_id == current_user.id,
+            GroupMember.is_active == True,
+            Group.is_archived == False,
+        )
         .options(selectinload(Group.members))
     )
     result = await db.execute(stmt)
     groups = result.scalars().all()
 
-    resp_list = [
-        GroupResponse(
-            id=g.id,
-            name=g.name,
-            group_type=g.group_type,
-            base_currency=g.base_currency,
-            simplify_debts=g.simplify_debts,
-            invite_code=g.invite_code,
-            avatar_url=g.avatar_url,
-            created_by=g.created_by,
-            is_archived=g.is_archived,
-            created_at=g.created_at,
-            member_count=len(g.members)
+    batch_balances = await LedgerService.get_groups_net_balances_batch(db, list(groups))
+
+    resp_list: List[GroupResponse] = []
+    for g in groups:
+        net_bals, _ = batch_balances.get(g.id, ({}, g.base_currency))
+        my_net = net_bals.get(current_user.id, Decimal("0"))
+        active_member_count = sum(1 for m in g.members if m.is_active)
+        resp_list.append(
+            _build_group_response(
+                g,
+                member_count=active_member_count,
+                net_balance=my_net,
+            )
         )
-        for g in groups
-    ]
     return APIResponse(data=resp_list)
 
 
@@ -111,14 +123,15 @@ async def get_group_details(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Verify membership
+    # Verify active membership
     mem_stmt = select(GroupMember).where(
         GroupMember.group_id == group_id,
-        GroupMember.user_id == current_user.id
+        GroupMember.user_id == current_user.id,
+        GroupMember.is_active == True,
     )
     mem_res = await db.execute(mem_stmt)
     if not mem_res.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Not a member of this group")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Not an active member of this group")
 
     # Fetch group with members
     stmt = select(Group).where(Group.id == group_id).options(
@@ -132,10 +145,12 @@ async def get_group_details(
     # Calculate balances and debt simplification
     net_balances, simplified_debts, bilateral_debts, currency = await LedgerService.get_group_balances(db, group_id)
 
-    # Build member dictionary for name lookup
+    # Build member dictionary for name lookup (includes former members so historical balances preserve names)
     members_dict = {m.user.id: m.user.full_name for m in group.members}
 
-    # Format member responses
+    active_members = [m for m in group.members if m.is_active]
+
+    # Format active member responses
     member_responses = [
         GroupMemberResponse(
             id=m.id,
@@ -146,7 +161,7 @@ async def get_group_details(
             role=m.role,
             joined_at=m.joined_at
         )
-        for m in group.members
+        for m in active_members
     ]
 
     # Format net balance responses
@@ -186,18 +201,10 @@ async def get_group_details(
         for b in bilateral_debts
     ]
 
-    group_resp = GroupResponse(
-        id=group.id,
-        name=group.name,
-        group_type=group.group_type,
-        base_currency=group.base_currency,
-        simplify_debts=group.simplify_debts,
-        invite_code=group.invite_code,
-        avatar_url=group.avatar_url,
-        created_by=group.created_by,
-        is_archived=group.is_archived,
-        created_at=group.created_at,
-        member_count=len(group.members)
+    group_resp = _build_group_response(
+        group,
+        member_count=len(active_members),
+        net_balance=net_balances.get(current_user.id, Decimal("0")),
     )
 
     detail_resp = GroupDetailResponse(
@@ -222,7 +229,7 @@ async def join_group_by_code(
     if not group:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid invite code")
 
-    # Check if already a member
+    # Check if already a member (reactivate if previously deactivated)
     mem_stmt = select(GroupMember).where(
         GroupMember.group_id == group.id,
         GroupMember.user_id == current_user.id
@@ -230,15 +237,17 @@ async def join_group_by_code(
     mem_res = await db.execute(mem_stmt)
     existing_member = mem_res.scalar_one_or_none()
     if existing_member:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You are already a member of this group")
-
-    # Add as member
-    new_member = GroupMember(
-        group_id=group.id,
-        user_id=current_user.id,
-        role="MEMBER"
-    )
-    db.add(new_member)
+        if existing_member.is_active:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You are already a member of this group")
+        existing_member.is_active = True
+    else:
+        db.add(
+            GroupMember(
+                group_id=group.id,
+                user_id=current_user.id,
+                role="MEMBER",
+            )
+        )
     try:
         await db.commit()
     except (IntegrityError, DBAPIError):
@@ -248,19 +257,20 @@ async def join_group_by_code(
             detail="Conflict joining group: membership or claim already exists."
         )
 
-    return APIResponse(data=GroupResponse(
-        id=group.id,
-        name=group.name,
-        group_type=group.group_type,
-        base_currency=group.base_currency,
-        simplify_debts=group.simplify_debts,
-        invite_code=group.invite_code,
-        avatar_url=group.avatar_url,
-        created_by=group.created_by,
-        is_archived=group.is_archived,
-        created_at=group.created_at,
-        member_count=0
-    ))
+    net_bals, _, _, _ = await LedgerService.get_group_balances(db, group.id)
+    members_res = await db.execute(
+        select(GroupMember).where(
+            GroupMember.group_id == group.id,
+            GroupMember.is_active == True,
+        )
+    )
+    return APIResponse(
+        data=_build_group_response(
+            group,
+            member_count=len(members_res.scalars().all()),
+            net_balance=net_bals.get(current_user.id, Decimal("0")),
+        )
+    )
 
 
 @router.post("/{group_id}/members", response_model=APIResponse[GroupMemberResponse], status_code=status.HTTP_201_CREATED)
@@ -278,10 +288,11 @@ async def add_group_member(
 
     caller_res = await db.execute(select(GroupMember).where(
         GroupMember.group_id == group_id,
-        GroupMember.user_id == current_user.id
+        GroupMember.user_id == current_user.id,
+        GroupMember.is_active == True,
     ))
     if not caller_res.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Not a member of this group")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Not an active member of this group")
 
     clean_name = data.full_name.strip()
     if not clean_name:
@@ -298,18 +309,35 @@ async def add_group_member(
         target_user = u_res.scalar_one_or_none()
 
     if target_user:
-        existing_mem = await db.execute(select(GroupMember).where(
+        existing_mem = (await db.execute(select(GroupMember).where(
             GroupMember.group_id == group_id,
             GroupMember.user_id == target_user.id
-        ))
-        if existing_mem.scalar_one_or_none():
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User is already a member of this group")
+        ))).scalar_one_or_none()
+        if existing_mem:
+            if existing_mem.is_active:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User is already a member of this group")
+            existing_mem.is_active = True
+            await db.commit()
+            await db.refresh(existing_mem)
+            return APIResponse(data=GroupMemberResponse(
+                id=existing_mem.id,
+                user_id=target_user.id,
+                full_name=target_user.full_name,
+                email=target_user.email,
+                avatar_url=target_user.avatar_url,
+                role=existing_mem.role,
+                joined_at=existing_mem.joined_at,
+            ))
     else:
         if not clean_email and not clean_phone:
             dup_stmt = (
                 select(GroupMember)
                 .join(User, User.id == GroupMember.user_id)
-                .where(GroupMember.group_id == group_id, User.full_name.ilike(clean_name))
+                .where(
+                    GroupMember.group_id == group_id,
+                    GroupMember.is_active == True,
+                    User.full_name.ilike(clean_name),
+                )
             )
             dup_res = await db.execute(dup_stmt)
             if dup_res.scalar_one_or_none():
@@ -401,7 +429,8 @@ async def update_group(
 ):
     mem_stmt = select(GroupMember).where(
         GroupMember.group_id == group_id,
-        GroupMember.user_id == current_user.id
+        GroupMember.user_id == current_user.id,
+        GroupMember.is_active == True,
     )
     mem_res = await db.execute(mem_stmt)
     if not mem_res.scalar_one_or_none():
@@ -425,19 +454,14 @@ async def update_group(
     await db.commit()
     await db.refresh(group)
 
-    return APIResponse(data=GroupResponse(
-        id=group.id,
-        name=group.name,
-        group_type=group.group_type,
-        base_currency=group.base_currency,
-        simplify_debts=group.simplify_debts,
-        invite_code=group.invite_code,
-        avatar_url=group.avatar_url,
-        created_by=group.created_by,
-        is_archived=group.is_archived,
-        created_at=group.created_at,
-        member_count=len(group.members)
-    ))
+    net_bals, _, _, _ = await LedgerService.get_group_balances(db, group.id)
+    return APIResponse(
+        data=_build_group_response(
+            group,
+            member_count=sum(1 for m in group.members if m.is_active),
+            net_balance=net_bals.get(current_user.id, Decimal("0")),
+        )
+    )
 
 
 @router.delete("/{group_id}", response_model=APIResponse[dict])
@@ -449,7 +473,8 @@ async def delete_group(
     mem_stmt = select(GroupMember).where(
         GroupMember.group_id == group_id,
         GroupMember.user_id == current_user.id,
-        GroupMember.role.in_(["OWNER", "ADMIN"])
+        GroupMember.role.in_(["OWNER", "ADMIN"]),
+        GroupMember.is_active == True,
     )
     mem_res = await db.execute(mem_stmt)
     if not mem_res.scalar_one_or_none():
@@ -483,7 +508,8 @@ async def create_invitation(
 ):
     mem_stmt = select(GroupMember).where(
         GroupMember.group_id == group_id,
-        GroupMember.user_id == current_user.id
+        GroupMember.user_id == current_user.id,
+        GroupMember.is_active == True,
     )
     mem_res = await db.execute(mem_stmt)
     if not mem_res.scalar_one_or_none():
@@ -519,7 +545,8 @@ async def list_invitations(
 ):
     mem_stmt = select(GroupMember).where(
         GroupMember.group_id == group_id,
-        GroupMember.user_id == current_user.id
+        GroupMember.user_id == current_user.id,
+        GroupMember.is_active == True,
     )
     mem_res = await db.execute(mem_stmt)
     if not mem_res.scalar_one_or_none():
@@ -573,7 +600,8 @@ async def revoke_invitation(
         mem_stmt = select(GroupMember).where(
             GroupMember.group_id == inv.group_id,
             GroupMember.user_id == current_user.id,
-            GroupMember.role.in_(["OWNER", "ADMIN"])
+            GroupMember.role.in_(["OWNER", "ADMIN"]),
+            GroupMember.is_active == True,
         )
         mem_res = await db.execute(mem_stmt)
         if not mem_res.scalar_one_or_none():
@@ -619,14 +647,17 @@ async def accept_invitation(
             detail="This invitation was issued to a different email address"
         )
 
-    # Add as member
+    # Add as member (or reactivate deactivated membership)
     mem_stmt = select(GroupMember).where(
         GroupMember.group_id == inv.group_id,
         GroupMember.user_id == current_user.id
     )
     mem_res = await db.execute(mem_stmt)
-    if not mem_res.scalar_one_or_none():
+    existing_mem = mem_res.scalar_one_or_none()
+    if not existing_mem:
         db.add(GroupMember(group_id=inv.group_id, user_id=current_user.id, role="MEMBER"))
+    elif not existing_mem.is_active:
+        existing_mem.is_active = True
 
     inv.status = "ACCEPTED"
     try:

@@ -132,6 +132,91 @@ def test_pairwise_bilateral_with_mutual_expenses_and_settlement():
     assert bilateral[0].amount == Decimal("33.33")
 
 
+def test_pairwise_bilateral_multi_payer_preserves_all_minor_units():
+    # Odd minor unit multi-payer expense: $1.01 paid by Alice ($0.51) and Bob ($0.50),
+    # split across Carol ($0.51) and Dave ($0.50). Previously floor division lost 2 cents!
+    expense_records = [
+        {
+            "payers": [("alice", Decimal("0.51")), ("bob", Decimal("0.50"))],
+            "splits": [("carol", Decimal("0.51")), ("dave", Decimal("0.50"))],
+            "total_amount": Decimal("1.01"),
+        }
+    ]
+    bilateral = DebtSimplifier.calculate_pairwise_bilateral_debts(
+        expense_records=expense_records,
+        settlement_records=[],
+        currency="USD",
+    )
+
+    net = {"alice": Decimal("0.00"), "bob": Decimal("0.00"), "carol": Decimal("0.00"), "dave": Decimal("0.00")}
+    for d in bilateral:
+        assert d.amount > Decimal("0.00")
+        net[d.debtor_id] -= d.amount
+        net[d.creditor_id] += d.amount
+
+    assert net["alice"] == Decimal("0.51")
+    assert net["bob"] == Decimal("0.50")
+    assert net["carol"] == Decimal("-0.51")
+    assert net["dave"] == Decimal("-0.50")
+    assert sum(d.amount for d in bilateral) == Decimal("1.01")
+
+
+def test_pairwise_bilateral_multi_payer_with_overlapping_payer_consumers():
+    # 3 participants share $3.00 equally ($1.00 each); Alice pays $2.00, Bob pays $1.00.
+    # Bob already paid his own $1.00 share cleanly, so only Carol owes Alice $1.00.
+    expense_records = [
+        {
+            "payers": [("alice", Decimal("2.00")), ("bob", Decimal("1.00"))],
+            "splits": [("alice", Decimal("1.00")), ("bob", Decimal("1.00")), ("carol", Decimal("1.00"))],
+            "total_amount": Decimal("3.00"),
+        }
+    ]
+    bilateral = DebtSimplifier.calculate_pairwise_bilateral_debts(
+        expense_records=expense_records,
+        settlement_records=[],
+        currency="USD",
+    )
+    assert len(bilateral) == 1
+    assert bilateral[0].debtor_id == "carol"
+    assert bilateral[0].creditor_id == "alice"
+    assert bilateral[0].amount == Decimal("1.00")
+
+
+def test_pairwise_bilateral_augmenting_path_rounding_stress():
+    # Construct 3 creditors x 3 debtors with odd fractional remainders on BHD (3 decimals)
+    expense_records = [
+        {
+            "payers": [
+                ("c1", Decimal("0.334")),
+                ("c2", Decimal("0.333")),
+                ("c3", Decimal("0.334")),
+            ],
+            "splits": [
+                ("d1", Decimal("0.111")),
+                ("d2", Decimal("0.445")),
+                ("d3", Decimal("0.445")),
+            ],
+            "total_amount": Decimal("1.001"),
+        }
+    ]
+    bilateral = DebtSimplifier.calculate_pairwise_bilateral_debts(
+        expense_records=expense_records,
+        settlement_records=[],
+        currency="BHD",
+    )
+    net = {"c1": Decimal("0"), "c2": Decimal("0"), "c3": Decimal("0"), "d1": Decimal("0"), "d2": Decimal("0"), "d3": Decimal("0")}
+    for b in bilateral:
+        net[b.debtor_id] -= b.amount
+        net[b.creditor_id] += b.amount
+
+    assert net["c1"] == Decimal("0.334")
+    assert net["c2"] == Decimal("0.333")
+    assert net["c3"] == Decimal("0.334")
+    assert net["d1"] == Decimal("-0.111")
+    assert net["d2"] == Decimal("-0.445")
+    assert net["d3"] == Decimal("-0.445")
+
+
 # -----------------------------------------------------------------------------
 # Precision Tests (JPY, BHD)
 # -----------------------------------------------------------------------------
@@ -228,4 +313,61 @@ def test_hypothesis_debt_simplification_invariants(debtor_amounts: list):
 
     for user, target in net_balances.items():
         assert reconstructed[user] == target, f"User {user} reconstructed {reconstructed[user]} != target {target}"
+
+
+@given(
+    total_minor=st.integers(min_value=10, max_value=10000),
+    n_payers=st.integers(min_value=2, max_value=5),
+    n_splits=st.integers(min_value=2, max_value=5),
+    weights=st.lists(st.integers(min_value=1, max_value=97), min_size=10, max_size=10),
+)
+@settings(max_examples=50)
+def test_hypothesis_multi_payer_bilateral_exact_conservation(
+    total_minor: int,
+    n_payers: int,
+    n_splits: int,
+    weights: list,
+):
+    """
+    Verifies every arbitrary multi-payer multi-split expense conserves every minor unit
+    across pairwise bilateral debts without truncation drift.
+    """
+    from app.core.money import from_minor_units
+
+    def partition(total: int, count: int, w_slice: list[int]) -> list[int]:
+        w_sum = sum(w_slice)
+        raw = [(total * w) // w_sum for w in w_slice]
+        rem = total - sum(raw)
+        for idx in range(rem):
+            raw[idx % count] += 1
+        return [x for x in raw]
+
+    payer_minor_shares = partition(total_minor, n_payers, weights[:n_payers])
+    split_minor_shares = partition(total_minor, n_splits, weights[5 : 5 + n_splits])
+
+    payers = [(f"u_{i}", from_minor_units(amt, "USD")) for i, amt in enumerate(payer_minor_shares) if amt > 0]
+    # Overlap some users between payers and splits and keep others disjoint
+    splits = [(f"u_{j + 1}", from_minor_units(amt, "USD")) for j, amt in enumerate(split_minor_shares) if amt > 0]
+    total_amt = from_minor_units(total_minor, "USD")
+
+    bilateral = DebtSimplifier.calculate_pairwise_bilateral_debts(
+        expense_records=[{"payers": payers, "splits": splits, "total_amount": total_amt}],
+        settlement_records=[],
+        currency="USD",
+    )
+
+    expected: dict[str, Decimal] = {}
+    for uid, amt in payers:
+        expected[uid] = expected.get(uid, Decimal("0.00")) + amt
+    for uid, amt in splits:
+        expected[uid] = expected.get(uid, Decimal("0.00")) - amt
+
+    observed: dict[str, Decimal] = {uid: Decimal("0.00") for uid in expected}
+    for b in bilateral:
+        assert b.amount > Decimal("0.00")
+        observed[b.debtor_id] = observed.get(b.debtor_id, Decimal("0.00")) - b.amount
+        observed[b.creditor_id] = observed.get(b.creditor_id, Decimal("0.00")) + b.amount
+
+    for uid, exp_net in expected.items():
+        assert observed.get(uid, Decimal("0.00")) == exp_net
 

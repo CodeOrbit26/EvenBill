@@ -57,7 +57,11 @@ async def _verify_group_membership(db: AsyncSession, group_id: str, user_id: str
     stmt = (
         select(Group)
         .join(GroupMember, GroupMember.group_id == Group.id)
-        .where(Group.id == group_id, GroupMember.user_id == user_id)
+        .where(
+            Group.id == group_id,
+            GroupMember.user_id == user_id,
+            GroupMember.is_active == True,
+        )
     )
     res = await db.execute(stmt)
     group = res.scalars().first()
@@ -241,7 +245,8 @@ async def delete_split_template(
         mem_stmt = select(GroupMember).where(
             GroupMember.group_id == group_id,
             GroupMember.user_id == current_user.id,
-            GroupMember.role.in_(["OWNER", "ADMIN"])
+            GroupMember.role.in_(["OWNER", "ADMIN"]),
+            GroupMember.is_active == True,
         )
         mem_res = await db.execute(mem_stmt)
         if not mem_res.scalar_one_or_none():

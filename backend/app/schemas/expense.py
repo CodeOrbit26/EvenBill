@@ -43,7 +43,7 @@ class ExpenseCreate(BaseModel):
     notes: Optional[str] = None
 
     # Multi-Currency parameters (optional, defaults to 1.0 or ECB snapshot)
-    exchange_rate: Optional[Decimal] = None
+    exchange_rate: Optional[Decimal] = Field(None, gt=Decimal("0"))
     exchange_rate_source: Optional[str] = None
 
     # Payers: if not provided or empty, defaults to current authenticated user paying 100%
@@ -76,6 +76,8 @@ class ExpenseUpdate(BaseModel):
     expense_date: Optional[date] = None
     notes: Optional[str] = None
     split_type: Optional[str] = None
+    exchange_rate: Optional[Decimal] = Field(None, gt=Decimal("0"))
+    exchange_rate_source: Optional[str] = None
 
     payers: Optional[List[PayerItem]] = None
     participant_ids: Optional[List[UUIDStr]] = Field(None, json_schema_extra={"example": ["4b684cb3-0ea1-4566-b333-e99d79a78bc5"]})

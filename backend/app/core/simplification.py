@@ -4,8 +4,9 @@ Reduces complex O(N^2) pairwise debts into an optimal O(N) settlement graph usin
 Guarantees deterministic matching and absolute conservation of net balance invariants.
 """
 
+from collections import deque
 from decimal import Decimal
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass
 from app.core.money import quantize_currency, to_minor_units, from_minor_units
 
@@ -119,6 +120,158 @@ class DebtSimplifier:
         return simplified_debts
 
     @staticmethod
+    def _allocate_expense_bilateral_flows(
+        payers: List[Tuple[str, Decimal]],
+        splits: List[Tuple[str, Decimal]],
+        currency: str,
+    ) -> List[Tuple[str, str, int]]:
+        """
+        Allocates bilateral (debtor_uid, creditor_uid, minor_amt) edges for a single
+        expense while preserving every minor currency unit of every participant's net
+        balance (paid - owed). Single-payer and single-debtor cases are direct; multi-payer
+        multi-debtor expenses use proportional floor + exact 0-1 residual flow rounding.
+        """
+        paid_minor: Dict[str, int] = {}
+        split_minor: Dict[str, int] = {}
+        for p_uid, p_amt in payers:
+            m = to_minor_units(p_amt, currency)
+            if m > 0:
+                paid_minor[p_uid] = paid_minor.get(p_uid, 0) + m
+        for s_uid, s_amt in splits:
+            m = to_minor_units(s_amt, currency)
+            if m > 0:
+                split_minor[s_uid] = split_minor.get(s_uid, 0) + m
+
+        total_paid = sum(paid_minor.values())
+        total_split = sum(split_minor.values())
+        if total_paid != total_split:
+            raise ValueError(
+                f"Expense conservation invariant violated: payers {total_paid} != splits {total_split} minor units"
+            )
+        if total_paid == 0:
+            return []
+
+        creditors: List[Tuple[str, int]] = []
+        debtors: List[Tuple[str, int]] = []
+        for uid in sorted(set(paid_minor.keys()) | set(split_minor.keys())):
+            net = paid_minor.get(uid, 0) - split_minor.get(uid, 0)
+            if net > 0:
+                creditors.append((uid, net))
+            elif net < 0:
+                debtors.append((uid, -net))
+
+        if not creditors or not debtors:
+            return []
+        if len(creditors) == 1:
+            cred_uid, _ = creditors[0]
+            return [(d_uid, cred_uid, d_amt) for d_uid, d_amt in debtors]
+        if len(debtors) == 1:
+            deb_uid, _ = debtors[0]
+            return [(deb_uid, c_uid, c_amt) for c_uid, c_amt in creditors]
+
+        pool = sum(c_amt for _, c_amt in creditors)
+        nd = len(debtors)
+        nc = len(creditors)
+
+        alloc = [[0] * nc for _ in range(nd)]
+        rem_num = [[0] * nc for _ in range(nd)]
+        row_rem = [debtors[i][1] for i in range(nd)]
+        col_rem = [creditors[j][1] for j in range(nc)]
+
+        for i, (_, d_amt) in enumerate(debtors):
+            for j, (_, c_amt) in enumerate(creditors):
+                prod = d_amt * c_amt
+                base = prod // pool
+                alloc[i][j] = base
+                rem_num[i][j] = prod % pool
+                row_rem[i] -= base
+                col_rem[j] -= base
+
+        delta = [[0] * nc for _ in range(nd)]
+        fractional_cells = [
+            (rem_num[i][j], i, j)
+            for i in range(nd)
+            for j in range(nc)
+            if rem_num[i][j] > 0
+        ]
+        fractional_cells.sort(key=lambda item: (-item[0], item[1], item[2]))
+        for _, i, j in fractional_cells:
+            if row_rem[i] > 0 and col_rem[j] > 0:
+                delta[i][j] = 1
+                row_rem[i] -= 1
+                col_rem[j] -= 1
+
+        while any(r > 0 for r in row_rem):
+            q: deque = deque()
+            parent_cred: List[Optional[int]] = [None] * nc
+            parent_deb: List[Optional[int]] = [None] * nd
+            vis_deb = [False] * nd
+            vis_cred = [False] * nc
+            for i in range(nd):
+                if row_rem[i] > 0:
+                    q.append(("D", i))
+                    vis_deb[i] = True
+
+            found_cred: Optional[int] = None
+            while q and found_cred is None:
+                kind, idx = q.popleft()
+                if kind == "D":
+                    cand_j = sorted(
+                        (j for j in range(nc) if not vis_cred[j] and delta[idx][j] == 0 and rem_num[idx][j] > 0),
+                        key=lambda j: (-rem_num[idx][j], j),
+                    )
+                    for j in cand_j:
+                        vis_cred[j] = True
+                        parent_cred[j] = idx
+                        if col_rem[j] > 0:
+                            found_cred = j
+                            break
+                        q.append(("C", j))
+                else:
+                    cand_i = sorted(
+                        (i for i in range(nd) if not vis_deb[i] and delta[i][idx] == 1),
+                        key=lambda i: (rem_num[i][idx], i),
+                    )
+                    for i in cand_i:
+                        vis_deb[i] = True
+                        parent_deb[i] = idx
+                        q.append(("D", i))
+
+            if found_cred is None:
+                raise AssertionError("Failed to find augmenting rounding path for multi-payer bilateral allocation")
+
+            curr_c = found_cred
+            col_rem[curr_c] -= 1
+            while True:
+                curr_d = parent_cred[curr_c]
+                assert curr_d is not None
+                delta[curr_d][curr_c] = 1
+                prev_c = parent_deb[curr_d]
+                if prev_c is None:
+                    row_rem[curr_d] -= 1
+                    break
+                delta[curr_d][prev_c] = 0
+                curr_c = prev_c
+
+        flows: List[Tuple[str, str, int]] = []
+        for i, (d_uid, d_amt) in enumerate(debtors):
+            row_sum = 0
+            for j, (c_uid, _) in enumerate(creditors):
+                val = alloc[i][j] + delta[i][j]
+                row_sum += val
+                if val > 0:
+                    flows.append((d_uid, c_uid, val))
+            if row_sum != d_amt:
+                raise AssertionError(f"Debtor {d_uid} bilateral allocation {row_sum} != {d_amt}")
+
+        for j, (c_uid, c_amt) in enumerate(creditors):
+            col_sum = sum(alloc[i][j] + delta[i][j] for i in range(nd))
+            if col_sum != c_amt:
+                raise AssertionError(f"Creditor {c_uid} bilateral allocation {col_sum} != {c_amt}")
+
+        return flows
+
+    @staticmethod
     def calculate_pairwise_bilateral_debts(
         expense_records: List[Dict],
         settlement_records: List[Dict],
@@ -127,8 +280,8 @@ class DebtSimplifier:
         """
         Calculates exact bilateral pairwise debts without simplification.
         For each pair (A, B), determines whether A owes B or B owes A and the exact net debt.
-        Never double-counts the payer's own share.
-        
+        Never double-counts the payer's own share and preserves every minor unit across multi-payer expenses.
+
         expense_records format:
         [
           {
@@ -139,8 +292,6 @@ class DebtSimplifier:
           ...
         ]
         """
-        # Pairwise raw balance: pairwise[debtor][creditor] = amount
-        # Net bilateral matrix: net_pairwise[(u1, u2)] where u1 < u2
         pairwise_raw: Dict[Tuple[str, str], int] = {}  # (from_user, to_user) in minor units
 
         def add_raw_debt(debtor: str, creditor: str, minor_amt: int):
@@ -150,32 +301,16 @@ class DebtSimplifier:
             pairwise_raw[key] = pairwise_raw.get(key, 0) + minor_amt
 
         for exp in expense_records:
-            payers = exp["payers"]
-            splits = exp["splits"]
-            total_amt = exp["total_amount"]
-            total_minor = to_minor_units(total_amt, currency)
-
+            total_minor = to_minor_units(exp["total_amount"], currency)
             if total_minor == 0:
                 continue
 
-            # Each payer funded a fraction of each participant's split
-            # Fraction funded by payer p: amount_paid_p / total_amt
-            for p_uid, p_amt in payers:
-                p_minor = to_minor_units(p_amt, currency)
-                if p_minor <= 0:
-                    continue
-
-                for s_uid, s_amt in splits:
-                    if s_uid == p_uid:
-                        # Payer paying their own share: NEVER creates a debt!
-                        continue
-                    s_minor = to_minor_units(s_amt, currency)
-                    if s_minor <= 0:
-                        continue
-
-                    # Portion of s_uid's split funded by p_uid
-                    debt_portion = (s_minor * p_minor) // total_minor
-                    add_raw_debt(debtor=s_uid, creditor=p_uid, minor_amt=debt_portion)
+            for d_uid, c_uid, flow_minor in DebtSimplifier._allocate_expense_bilateral_flows(
+                payers=exp["payers"],
+                splits=exp["splits"],
+                currency=currency,
+            ):
+                add_raw_debt(debtor=d_uid, creditor=c_uid, minor_amt=flow_minor)
 
         # Apply settlements
         for s in settlement_records:
@@ -233,8 +368,8 @@ class DebtSimplifier:
         Calculates the net balance for each user in a group:
         Net = (Sum of amounts paid for expenses)
             - (Sum of amounts owed in expense splits)
-            + (Settlements received as recipient)
-            - (Settlements paid as payer)
+            + (Settlements paid out as payer)
+            - (Settlements received as recipient)
         """
         balances: Dict[str, Decimal] = {}
 

@@ -54,6 +54,7 @@ class GroupResponse(BaseModel):
     is_archived: bool
     created_at: datetime
     member_count: int = 0
+    net_balance: Decimal = Decimal("0")
 
 
 class SimplifiedDebtItem(BaseModel):

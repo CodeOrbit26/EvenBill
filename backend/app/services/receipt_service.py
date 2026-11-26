@@ -217,7 +217,8 @@ class ReceiptService:
                 elif exp.group_id:
                     gm_stmt = select(GroupMember).where(
                         GroupMember.group_id == exp.group_id,
-                        GroupMember.user_id == current_user.id
+                        GroupMember.user_id == current_user.id,
+                        GroupMember.is_active == True,
                     )
                     gm_res = await db.execute(gm_stmt)
                     if gm_res.scalar_one_or_none():

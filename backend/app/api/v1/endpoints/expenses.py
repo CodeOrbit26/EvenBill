@@ -126,10 +126,11 @@ async def list_group_expenses(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Verify group membership
+    # Verify active group membership
     mem_stmt = select(GroupMember).where(
         GroupMember.group_id == group_id,
-        GroupMember.user_id == current_user.id
+        GroupMember.user_id == current_user.id,
+        GroupMember.is_active == True,
     )
     mem_res = await db.execute(mem_stmt)
     if not mem_res.scalar_one_or_none():
@@ -259,7 +260,8 @@ async def search_expenses(
     if group_id:
         mem_stmt = select(GroupMember).where(
             GroupMember.group_id == group_id,
-            GroupMember.user_id == current_user.id
+            GroupMember.user_id == current_user.id,
+            GroupMember.is_active == True,
         )
         mem_res = await db.execute(mem_stmt)
         if not mem_res.scalar_one_or_none():
@@ -332,7 +334,8 @@ async def get_expense(
     if expense.group_id:
         mem_stmt = select(GroupMember).where(
             GroupMember.group_id == expense.group_id,
-            GroupMember.user_id == current_user.id
+            GroupMember.user_id == current_user.id,
+            GroupMember.is_active == True,
         )
         mem_res = await db.execute(mem_stmt)
         if not mem_res.scalar_one_or_none():

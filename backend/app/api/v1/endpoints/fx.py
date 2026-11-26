@@ -7,14 +7,19 @@ Preserves original financial amounts unchanged.
 from typing import Dict, Any, Optional
 from decimal import Decimal
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.schemas.common import APIResponse
-from app.services.fx_service import FXService, FXRateResult, FXConversionResult
+from app.services.fx_service import (
+    FXService,
+    FXRateResult,
+    FXConversionResult,
+    UnsupportedCurrencyPairError,
+)
 
 router = APIRouter(prefix="/fx", tags=["Currency Conversion & FX"])
 
@@ -48,9 +53,15 @@ async def convert_currency(
     Calculates currency conversion for display while keeping the original amount strictly unchanged.
     Returns conversion metadata including rate, source, timestamp, and rate status.
     """
-    result = FXService.convert(
-        amount=data.amount,
-        from_currency=data.from_currency,
-        to_currency=data.to_currency
-    )
+    try:
+        result = FXService.convert(
+            amount=data.amount,
+            from_currency=data.from_currency,
+            to_currency=data.to_currency,
+        )
+    except UnsupportedCurrencyPairError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        )
     return APIResponse(data=result)
