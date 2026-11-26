@@ -13,6 +13,10 @@ class ExpenseRow extends StatelessWidget {
   final String payerText;
   final double netShare;
   final String currency;
+  final double? totalAmount;
+  final double? userPaidAmount;
+  final double? userOwedAmount;
+  final bool? isUserInvolved;
   final VoidCallback onTap;
 
   const ExpenseRow({
@@ -24,25 +28,67 @@ class ExpenseRow extends StatelessWidget {
     required this.payerText,
     required this.netShare,
     this.currency = 'USD',
+    this.totalAmount,
+    this.userPaidAmount,
+    this.userOwedAmount,
+    this.isUserInvolved,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final isLent = netShare > 0;
-    final isBorrowed = netShare < 0;
-    final isNotInvolved = netShare.abs() < 0.001;
+    final isLent = netShare > 0.001;
+    final isBorrowed = netShare < -0.001;
+    final involved = isUserInvolved ??
+        (isLent ||
+            isBorrowed ||
+            (userPaidAmount ?? 0).abs() >= 0.001 ||
+            (userOwedAmount ?? 0).abs() >= 0.001);
+    final isNotInvolved = !isLent && !isBorrowed && !involved;
+    final isSoloPersonal = !isLent &&
+        !isBorrowed &&
+        involved &&
+        totalAmount != null &&
+        totalAmount! > 0.001 &&
+        ((userPaidAmount ?? 0) - totalAmount!).abs() < 0.01 &&
+        ((userOwedAmount ?? 0) - totalAmount!).abs() < 0.01;
+
+    final double? neutralAmount = isSoloPersonal
+        ? totalAmount
+        : ((userPaidAmount ?? 0) > 0.001
+            ? userPaidAmount
+            : ((userOwedAmount ?? 0) > 0.001
+                ? userOwedAmount
+                : totalAmount));
+    final hasZeroNetInvolvedAmount = !isLent && !isBorrowed && involved;
+    final neutralColor = isDark ? AppColors.mintAccent : AppColors.forestGreen;
 
     final shareColor = isLent
         ? (isDark ? AppColors.positiveGreenDark : AppColors.positiveGreen)
         : (isBorrowed
             ? (isDark ? AppColors.negativeRedDark : AppColors.negativeRed)
-            : (isDark ? AppColors.darkTextMuted : AppColors.lightTextMuted));
+            : (involved
+                ? neutralColor
+                : (isDark ? AppColors.darkTextMuted : AppColors.lightTextMuted)));
 
     final shareLabel = isLent
         ? 'you lent'
-        : (isBorrowed ? 'you borrowed' : 'no balance');
+        : (isBorrowed
+            ? 'you borrowed'
+            : (isSoloPersonal
+                ? 'personal'
+                : (involved ? 'even share' : 'no balance')));
+
+    final showTotalSubcaption = totalAmount != null &&
+        totalAmount! > 0.001 &&
+        (isNotInvolved ||
+            ((isLent || isBorrowed) &&
+                (totalAmount! - netShare.abs()).abs() >= 0.01) ||
+            (hasZeroNetInvolvedAmount &&
+                !isSoloPersonal &&
+                neutralAmount != null &&
+                (totalAmount! - neutralAmount).abs() >= 0.01));
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8.0),
@@ -122,12 +168,39 @@ class ExpenseRow extends StatelessWidget {
                         color: isDark ? AppColors.darkTextMuted : AppColors.lightTextMuted,
                       ),
                     )
+                  else if (hasZeroNetInvolvedAmount)
+                    if (neutralAmount != null && neutralAmount > 0.001)
+                      AmountDisplay(
+                        amount: neutralAmount,
+                        currency: currency,
+                        overrideColor: shareColor,
+                      )
+                    else
+                      Text(
+                        'settled',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: shareColor,
+                        ),
+                      )
                   else
                     AmountDisplay(
                       amount: netShare.abs(),
                       currency: currency,
                       overrideColor: shareColor,
                     ),
+                  if (showTotalSubcaption) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      'Total ${AmountDisplay.format(totalAmount!, currency)}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: isDark ? AppColors.darkTextMuted : AppColors.lightTextMuted,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ],

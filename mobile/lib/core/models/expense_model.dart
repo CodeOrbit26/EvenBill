@@ -167,6 +167,26 @@ class ExpenseModel {
   /// Calculates net position for a user on this specific expense.
   /// Positive = user paid more than they owe (lent money).
   /// Negative = user owes more than they paid (borrowed money).
+  double getUserPaidAmount(String userId) {
+    if (payers.isEmpty || userId.isEmpty) return 0.0;
+    return payers
+        .where((p) => p.userId == userId)
+        .fold(0.0, (sum, p) => sum + p.amountPaid);
+  }
+
+  double getUserOwedAmount(String userId) {
+    if (splits.isEmpty || userId.isEmpty) return 0.0;
+    return splits
+        .where((s) => s.userId == userId)
+        .fold(0.0, (sum, s) => sum + s.owedAmount);
+  }
+
+  bool isUserInvolved(String userId) {
+    if (userId.isEmpty) return false;
+    return payers.any((p) => p.userId == userId) ||
+        splits.any((s) => s.userId == userId);
+  }
+
   double getUserNetShare(String userId) {
     final paid = payers.where((p) => p.userId == userId).fold<double>(0.0, (acc, p) => acc + p.amountPaid);
     final owed = splits.where((s) => s.userId == userId).fold<double>(0.0, (acc, s) => acc + s.owedAmount);

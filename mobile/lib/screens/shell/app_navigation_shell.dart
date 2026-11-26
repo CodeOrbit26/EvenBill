@@ -176,7 +176,10 @@ class _AppNavigationShellState extends State<AppNavigationShell> {
       return ExpenseDetailsScreen(
         expense: _selectedExpense!,
         onEdit: () => setState(() => _isAddingExpense = true),
-        onDelete: () => setState(() => _selectedExpense = null),
+        onDelete: () => setState(() {
+          _selectedExpense = null;
+          _overviewRefreshKey++;
+        }),
         onBack: () => setState(() => _selectedExpense = null),
       );
     }
@@ -195,7 +198,10 @@ class _AppNavigationShellState extends State<AppNavigationShell> {
             groupId: _selectedGroup!.id,
           );
         },
-        onBack: () => setState(() => _selectedGroup = null),
+        onBack: () => setState(() {
+          _selectedGroup = null;
+          _overviewRefreshKey++;
+        }),
       );
     }
 
@@ -204,7 +210,10 @@ class _AppNavigationShellState extends State<AppNavigationShell> {
         friend: _selectedFriend!,
         onSettleUp: () => _openSettlement(friend: _selectedFriend),
         onExpenseTap: (exp) => setState(() => _selectedExpense = exp),
-        onBack: () => setState(() => _selectedFriend = null),
+        onBack: () => setState(() {
+          _selectedFriend = null;
+          _overviewRefreshKey++;
+        }),
       );
     }
 

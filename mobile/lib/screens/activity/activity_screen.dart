@@ -331,9 +331,41 @@ class _ActivityScreenState extends State<ActivityScreen> {
             (act) {
               final isExpense = act.itemType == 'EXPENSE';
               final isSettlement = act.itemType == 'SETTLEMENT';
-              final color = isExpense
-                  ? (act.userNetShare >= 0 ? AppColors.positiveGreen : AppColors.negativeRed)
-                  : AppColors.forestGreen;
+              final isLent = !isSettlement && act.userNetShare > 0.001;
+              final isBorrowed = !isSettlement && act.userNetShare < -0.001;
+              final isZeroNetExpense = !isSettlement && !isLent && !isBorrowed;
+              final involved = act.resolvedIsUserInvolved();
+              final isNotInvolved = isZeroNetExpense && !involved;
+              final isSoloPersonal = isZeroNetExpense &&
+                  involved &&
+                  act.totalAmount > 0.001 &&
+                  ((act.userPaidAmount ?? 0) - act.totalAmount).abs() < 0.01 &&
+                  ((act.userOwedAmount ?? 0) - act.totalAmount).abs() < 0.01;
+              final color = isSettlement
+                  ? (isDark ? AppColors.mintAccent : AppColors.forestGreen)
+                  : (isLent
+                      ? (isDark ? AppColors.positiveGreenDark : AppColors.positiveGreen)
+                      : (isBorrowed
+                          ? (isDark ? AppColors.negativeRedDark : AppColors.negativeRed)
+                          : (involved
+                              ? (isDark ? AppColors.mintAccent : AppColors.forestGreen)
+                              : (isDark ? AppColors.darkTextMuted : AppColors.lightTextMuted))));
+              final badgeLabel = isSettlement
+                  ? 'settled'
+                  : (isLent
+                      ? 'lent'
+                      : (isBorrowed
+                          ? 'borrowed'
+                          : (isSoloPersonal
+                              ? 'personal'
+                              : (involved ? 'even share' : 'no balance'))));
+              final zeroNetAmount = isSoloPersonal
+                  ? act.totalAmount
+                  : ((act.userPaidAmount ?? 0) > 0.001
+                      ? act.userPaidAmount!
+                      : ((act.userOwedAmount ?? 0) > 0.001
+                          ? act.userOwedAmount!
+                          : act.totalAmount));
 
               return Container(
                 margin: const EdgeInsets.only(bottom: 10),
@@ -394,7 +426,9 @@ class _ActivityScreenState extends State<ActivityScreen> {
                               const SizedBox(width: 6),
                               Expanded(
                                 child: Text(
-                                  'By ${act.createdByName}',
+                                  act.description.isNotEmpty
+                                      ? act.description
+                                      : 'By ${act.createdByName}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: AppTypography.bodyMedium(isDark).copyWith(fontSize: 11),
@@ -418,37 +452,36 @@ class _ActivityScreenState extends State<ActivityScreen> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        AmountDisplay(
-                          amount: isSettlement ? act.totalAmount : act.userNetShare.abs(),
-                          currency: act.currency,
-                          overrideColor: isSettlement
-                              ? (isDark ? AppColors.mintAccent : AppColors.forestGreen)
-                              : (act.userNetShare >= 0
-                                  ? (isDark ? AppColors.positiveGreenDark : AppColors.positiveGreen)
-                                  : (isDark ? AppColors.negativeRedDark : AppColors.negativeRed)),
-                        ),
+                        if (isNotInvolved)
+                          Text(
+                            'not involved',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: color,
+                            ),
+                          )
+                        else
+                          AmountDisplay(
+                            amount: isSettlement
+                                ? act.totalAmount
+                                : (isZeroNetExpense ? zeroNetAmount : act.userNetShare.abs()),
+                            currency: act.currency,
+                            overrideColor: color,
+                          ),
                         const SizedBox(height: 3),
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: (isSettlement
-                                    ? (isDark ? AppColors.mintAccent : AppColors.forestGreen)
-                                    : (act.userNetShare >= 0
-                                        ? (isDark ? AppColors.positiveGreenDark : AppColors.positiveGreen)
-                                        : (isDark ? AppColors.negativeRedDark : AppColors.negativeRed)))
-                                .withOpacity(0.12),
+                            color: color.withOpacity(0.12),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
-                            isSettlement ? 'settled' : (act.userNetShare >= 0 ? 'lent' : 'borrowed'),
+                            badgeLabel,
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.w700,
-                              color: isSettlement
-                                  ? (isDark ? AppColors.mintAccent : AppColors.forestGreen)
-                                  : (act.userNetShare >= 0
-                                      ? (isDark ? AppColors.positiveGreenDark : AppColors.positiveGreen)
-                                      : (isDark ? AppColors.negativeRedDark : AppColors.negativeRed)),
+                              color: color,
                             ),
                           ),
                         ),

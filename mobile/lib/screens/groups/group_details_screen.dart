@@ -17,6 +17,7 @@ import '../../core/models/group_model.dart';
 import '../../core/models/expense_model.dart';
 import '../../core/models/group_invitation_model.dart';
 import '../../core/network/api_client.dart';
+import '../../core/utils/identity_utils.dart';
 import '../expenses/split_preset_picker_modal.dart';
 
 class GroupDetailsScreen extends StatefulWidget {
@@ -43,6 +44,7 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> with SingleTick
   late TabController _tabController;
   bool _isLoading = true;
   String? _errorMessage;
+  String? _currentUserId;
   GroupDetailModel? _groupDetail;
   List<ExpenseModel> _expenses = [];
 
@@ -66,12 +68,15 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> with SingleTick
     });
 
     try {
+      final userFuture = resolveAuthenticatedUser();
       final detailFuture = Injection.groupRepository.getGroupDetails(widget.group.id);
       final expensesFuture = Injection.expenseRepository.listGroupExpenses(widget.group.id);
 
       final results = await Future.wait([detailFuture, expensesFuture]);
+      final currentUser = await userFuture;
       if (mounted) {
         setState(() {
+          _currentUserId = currentUser?.id;
           _groupDetail = results[0] as GroupDetailModel;
           _expenses = results[1] as List<ExpenseModel>;
           _isLoading = false;
@@ -772,7 +777,13 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> with SingleTick
                       ),
                     ),
                     DebtIndicatorBadge(
-                      netAmount: widget.group.netBalance,
+                      netAmount: (_groupDetail != null && _currentUserId != null)
+                          ? (_groupDetail!.netBalances
+                                  .where((nb) => nb.userId == _currentUserId)
+                                  .firstOrNull
+                                  ?.netBalance ??
+                              widget.group.netBalance)
+                          : widget.group.netBalance,
                       currency: widget.group.currency,
                     ),
                   ],
@@ -873,16 +884,23 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> with SingleTick
             )
           else
             ..._expenses.map(
-              (exp) => ExpenseRow(
-                description: exp.description,
-                category: exp.category,
-                groupName: widget.group.name,
-                dateFormatted: exp.dateFormatted,
-                payerText: exp.paidBy,
-                netShare: exp.yourNetShare,
-                currency: exp.currency,
-                onTap: () => widget.onExpenseTap(exp),
-              ),
+              (exp) {
+                final hasUid = _currentUserId != null && _currentUserId!.isNotEmpty;
+                return ExpenseRow(
+                  description: exp.description,
+                  category: exp.category,
+                  groupName: widget.group.name,
+                  dateFormatted: exp.dateFormatted,
+                  payerText: exp.paidBy,
+                  netShare: hasUid ? exp.getUserNetShare(_currentUserId!) : exp.yourNetShare,
+                  currency: exp.currency,
+                  totalAmount: exp.totalAmount,
+                  userPaidAmount: hasUid ? exp.getUserPaidAmount(_currentUserId!) : null,
+                  userOwedAmount: hasUid ? exp.getUserOwedAmount(_currentUserId!) : null,
+                  isUserInvolved: hasUid ? exp.isUserInvolved(_currentUserId!) : null,
+                  onTap: () => widget.onExpenseTap(exp),
+                );
+              },
             ),
           const SizedBox(height: 70), // Spacing for FAB
         ],

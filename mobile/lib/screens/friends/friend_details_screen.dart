@@ -9,6 +9,7 @@ import '../../core/widgets/buttons/primary_button.dart';
 import '../../core/di/injection.dart';
 import '../../core/models/friend_model.dart';
 import '../../core/models/expense_model.dart';
+import '../../core/utils/identity_utils.dart';
 
 class FriendDetailsScreen extends StatefulWidget {
   final FriendModel friend;
@@ -31,6 +32,7 @@ class FriendDetailsScreen extends StatefulWidget {
 class _FriendDetailsScreenState extends State<FriendDetailsScreen> {
   bool _isLoading = true;
   double _currentNetBalance = 0.0;
+  String? _currentUserId;
   List<ExpenseModel> _sharedExpenses = [];
 
   @override
@@ -43,15 +45,18 @@ class _FriendDetailsScreenState extends State<FriendDetailsScreen> {
   Future<void> _loadFriendHistory() async {
     setState(() => _isLoading = true);
     try {
+      final userFuture = resolveAuthenticatedUser();
       final balanceFuture = Injection.expenseRepository.get1on1Balance(widget.friend.id);
       final expensesFuture = Injection.expenseRepository.listPersonalExpenses();
 
       final results = await Future.wait([balanceFuture, expensesFuture]);
+      final currentUser = await userFuture;
       final balanceMap = results[0] as Map<String, dynamic>;
       final personalExpenses = results[1] as List<ExpenseModel>;
 
       if (mounted) {
         setState(() {
+          _currentUserId = currentUser?.id;
           _currentNetBalance = double.tryParse(balanceMap['net_balance']?.toString() ?? '0') ?? widget.friend.netBalance;
           _sharedExpenses = personalExpenses.where((exp) {
             return exp.payers.any((p) => p.userId == widget.friend.id) ||
@@ -192,16 +197,23 @@ class _FriendDetailsScreenState extends State<FriendDetailsScreen> {
               )
             else
               ..._sharedExpenses.map(
-                (exp) => ExpenseRow(
-                  description: exp.description,
-                  category: exp.category,
-                  groupName: 'Direct Expense',
-                  dateFormatted: exp.dateFormatted,
-                  payerText: exp.paidBy,
-                  netShare: exp.yourNetShare,
-                  currency: exp.currency,
-                  onTap: () => widget.onExpenseTap(exp),
-                ),
+                (exp) {
+                  final hasUid = _currentUserId != null && _currentUserId!.isNotEmpty;
+                  return ExpenseRow(
+                    description: exp.description,
+                    category: exp.category,
+                    groupName: 'Direct Expense',
+                    dateFormatted: exp.dateFormatted,
+                    payerText: exp.paidBy,
+                    netShare: hasUid ? exp.getUserNetShare(_currentUserId!) : exp.yourNetShare,
+                    currency: exp.currency,
+                    totalAmount: exp.totalAmount,
+                    userPaidAmount: hasUid ? exp.getUserPaidAmount(_currentUserId!) : null,
+                    userOwedAmount: hasUid ? exp.getUserOwedAmount(_currentUserId!) : null,
+                    isUserInvolved: hasUid ? exp.isUserInvolved(_currentUserId!) : null,
+                    onTap: () => widget.onExpenseTap(exp),
+                  );
+                },
               ),
             const SizedBox(height: 32),
           ],

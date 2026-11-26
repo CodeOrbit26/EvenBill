@@ -334,12 +334,12 @@ class _OverviewScreenState extends State<OverviewScreen> {
       );
     }
 
-    final lentCount = _activities.where((act) => act.userNetShare > 0).length;
-    final oweCount = _activities.where((act) => act.userNetShare < 0).length;
+    final lentCount = _activities.where((act) => act.userNetShare > 0.001).length;
+    final oweCount = _activities.where((act) => act.userNetShare < -0.001).length;
 
     final filteredActivities = _activities.where((act) {
-      if (_activeFilter == 'LENT') return act.userNetShare > 0;
-      if (_activeFilter == 'BORROWED') return act.userNetShare < 0;
+      if (_activeFilter == 'LENT') return act.userNetShare > 0.001;
+      if (_activeFilter == 'BORROWED') return act.userNetShare < -0.001;
       return true;
     }).toList();
 
@@ -583,6 +583,11 @@ class _OverviewScreenState extends State<OverviewScreen> {
             )
           else
             ...filteredActivities.map((act) {
+              final payerText = act.description.isNotEmpty
+                  ? act.description
+                  : (act.createdByName.isNotEmpty
+                      ? 'Paid by ${act.createdByName}'
+                      : act.itemType);
               return Padding(
                 padding: const EdgeInsets.only(bottom: AppSpacing.xs),
                 child: ExpenseRow(
@@ -590,9 +595,13 @@ class _OverviewScreenState extends State<OverviewScreen> {
                   category: act.category,
                   groupName: act.groupName ?? 'General',
                   dateFormatted: _formatDate(act.timestamp),
-                  payerText: act.createdByName.isNotEmpty ? 'Paid by ${act.createdByName}' : act.itemType,
+                  payerText: payerText,
                   netShare: act.userNetShare,
                   currency: act.currency,
+                  totalAmount: act.totalAmount,
+                  userPaidAmount: act.userPaidAmount,
+                  userOwedAmount: act.userOwedAmount,
+                  isUserInvolved: act.resolvedIsUserInvolved(),
                   onTap: () => _handleExpenseTap(act),
                 ),
               );

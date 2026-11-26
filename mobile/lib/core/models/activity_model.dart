@@ -7,6 +7,9 @@ class ActivityItemModel {
   final double totalAmount;
   final String currency;
   final double userNetShare;
+  final double? userPaidAmount;
+  final double? userOwedAmount;
+  final bool? isUserInvolved;
   final String? groupId;
   final String? groupName;
   final String createdByName;
@@ -21,6 +24,9 @@ class ActivityItemModel {
     required this.totalAmount,
     required this.currency,
     required this.userNetShare,
+    this.userPaidAmount,
+    this.userOwedAmount,
+    this.isUserInvolved,
     this.groupId,
     this.groupName,
     required this.createdByName,
@@ -37,6 +43,15 @@ class ActivityItemModel {
       totalAmount: double.tryParse(json['total_amount']?.toString() ?? '0') ?? 0.0,
       currency: json['currency'] as String? ?? 'USD',
       userNetShare: double.tryParse(json['user_net_share']?.toString() ?? '0') ?? 0.0,
+      userPaidAmount: json['user_paid_amount'] != null
+          ? double.tryParse(json['user_paid_amount'].toString())
+          : null,
+      userOwedAmount: json['user_owed_amount'] != null
+          ? double.tryParse(json['user_owed_amount'].toString())
+          : null,
+      isUserInvolved: json['is_user_involved'] is bool
+          ? json['is_user_involved'] as bool
+          : null,
       groupId: json['group_id'] as String?,
       groupName: json['group_name'] as String?,
       createdByName: json['created_by_name'] as String? ?? 'User',
@@ -44,6 +59,25 @@ class ActivityItemModel {
           ? DateTime.parse(json['timestamp'] as String)
           : DateTime.now(),
     );
+  }
+
+  /// Resolves whether the authenticated user participated as a payer or split
+  /// participant, falling back safely for older API payloads without the flag.
+  bool resolvedIsUserInvolved({String? currentUserName}) {
+    if (isUserInvolved != null) return isUserInvolved!;
+    if (userPaidAmount != null || userOwedAmount != null) {
+      return (userPaidAmount ?? 0).abs() >= 0.001 ||
+          (userOwedAmount ?? 0).abs() >= 0.001;
+    }
+    if (userNetShare.abs() >= 0.001) return true;
+    if (currentUserName != null && currentUserName.trim().isNotEmpty) {
+      final me = currentUserName.trim().toLowerCase();
+      final descLower = description.trim().toLowerCase();
+      if (descLower == 'paid by $me' || descLower.startsWith('paid by $me (')) {
+        return true;
+      }
+    }
+    return false;
   }
 }
 

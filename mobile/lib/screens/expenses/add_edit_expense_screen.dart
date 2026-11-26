@@ -1152,6 +1152,17 @@ class _AddEditExpenseScreenState extends State<AddEditExpenseScreen> {
                         ],
                       ),
                       const SizedBox(height: 4),
+                      if (_availableParticipants.length <= 1 && _contextLoadError == null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Text(
+                            'Solo expense: only you are included, so balances with others stay at 0 until another member is added.',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: isDark ? AppColors.darkTextMuted : AppColors.lightTextMuted,
+                            ),
+                          ),
+                        ),
                       ..._availableParticipants.map((p) {
                         final id = p['id']!;
                         final name = p['name']!;

@@ -19,18 +19,20 @@ class AmountDisplay extends StatelessWidget {
     this.overrideColor,
   });
 
-  String _formatAmount() {
-    final format = NumberFormat.currency(
+  static String format(double amount, String currency, {bool showSign = false}) {
+    final formatter = NumberFormat.currency(
       symbol: getCurrencySymbol(currency),
       decimalDigits: 2,
     );
-    final formatted = format.format(amount.abs());
+    final formatted = formatter.format(amount.abs());
     if (showSign) {
       if (amount > 0) return '+$formatted';
       if (amount < 0) return '-$formatted';
     }
     return amount < 0 ? '-$formatted' : formatted;
   }
+
+  String _formatAmount() => format(amount, currency, showSign: showSign);
 
   static String getCurrencySymbol(String code) {
     switch (code.toUpperCase()) {
